@@ -530,7 +530,7 @@ pub(super) struct Channel<Signer: Sign> {
 
 	latest_monitor_update_id: u64,
 
-	holder_signer: Signer,
+	pub(crate) holder_signer: Signer,
 	shutdown_scriptpubkey: Option<ShutdownScript>,
 	destination_script: Script,
 
@@ -1044,7 +1044,8 @@ impl<Signer: Sign> Channel<Signer> {
 				counterparty_parameters: None,
 				funding_outpoint: None,
 				opt_anchors: if opt_anchors { Some(()) } else { None },
-				opt_non_zero_fee_anchors: None
+				opt_non_zero_fee_anchors: None,
+				original_funding_outpoint: None,
 			},
 			funding_transaction: None,
 
@@ -1392,7 +1393,8 @@ impl<Signer: Sign> Channel<Signer> {
 				}),
 				funding_outpoint: None,
 				opt_anchors: if opt_anchors { Some(()) } else { None },
-				opt_non_zero_fee_anchors: None
+				opt_non_zero_fee_anchors: None,
+				original_funding_outpoint: None,
 			},
 			funding_transaction: None,
 
@@ -4556,6 +4558,15 @@ impl<Signer: Sign> Channel<Signer> {
 		height.checked_sub(self.funding_tx_confirmation_height).map_or(0, |c| c + 1)
 	}
 
+	///
+	pub fn get_original_funding_txo(&self) -> Option<OutPoint> {
+		if self.channel_transaction_parameters.original_funding_outpoint.is_none() {
+			self.get_funding_txo()
+		} else {
+			self.channel_transaction_parameters.original_funding_outpoint
+		}
+	}
+
 	fn get_holder_selected_contest_delay(&self) -> u16 {
 		self.channel_transaction_parameters.holder_selected_contest_delay
 	}
@@ -4622,6 +4633,15 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn get_value_satoshis(&self) -> u64 {
 		self.channel_value_satoshis
+	}
+
+	pub fn set_value_satoshis(&mut self, channel_value_satoshis: u64) {
+		self.channel_value_satoshis = channel_value_satoshis;
+		self.holder_signer.set_channel_value_satoshis(channel_value_satoshis);
+	}
+
+	pub fn set_value_to_self(&mut self, value_to_self_msat: u64) {
+		self.value_to_self_msat = value_to_self_msat;
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
@@ -5691,7 +5711,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	/// Only fails in case of bad keys
-	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+	pub(crate) fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
@@ -5789,9 +5809,9 @@ impl<Signer: Sign> Channel<Signer> {
 			signature = res.0;
 			htlc_signatures = res.1;
 
-			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} -> {} in channel {}",
+			log_trace!(logger, "Signed remote commitment tx {} (txid {}) with redeemscript {} with value {} -> {} in channel {}",
 				encode::serialize_hex(&commitment_stats.tx.trust().built_transaction().transaction),
-				&counterparty_commitment_txid, encode::serialize_hex(&self.get_funding_redeemscript()),
+				&counterparty_commitment_txid, encode::serialize_hex(&self.get_funding_redeemscript()), self.channel_value_satoshis,
 				log_bytes!(signature.serialize_compact()[..]), log_bytes!(self.channel_id()));
 
 			for (ref htlc_sig, ref htlc) in htlc_signatures.iter().zip(htlcs) {
@@ -5942,7 +5962,7 @@ impl<Signer: Sign> Channel<Signer> {
 				_ => {}
 			}
 		}
-		let monitor_update = if let Some(funding_txo) = self.get_funding_txo() {
+		let monitor_update = if let Some(funding_txo) = self.get_original_funding_txo() {
 			// If we haven't yet exchanged funding signatures (ie channel_state < FundingSent),
 			// returning a channel monitor update here would imply a channel monitor update before
 			// we even registered the channel monitor to begin with, which is invalid.

@@ -410,7 +410,15 @@ pub trait BaseSign {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait Sign: BaseSign + Writeable {}
+pub trait Sign: BaseSign + Writeable + ExtraSign {}
+
+///
+pub trait ExtraSign {
+	///
+	fn sign_with_fund_key_callback<F>(&self, cb: &mut F) where F: FnMut(&SecretKey);
+	///
+	fn set_channel_value_satoshis(&mut self, value: u64);
+}
 
 /// Specifies the recipient of an invoice.
 ///
@@ -868,6 +876,16 @@ impl BaseSign for InMemorySigner {
 		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
+	}
+}
+
+impl ExtraSign for InMemorySigner {
+	fn sign_with_fund_key_callback<F>(&self, cb: &mut F) where F: FnMut(&SecretKey) {
+		cb(&self.funding_key);
+    }	
+
+	fn set_channel_value_satoshis(&mut self, value: u64) {
+		self.channel_value_satoshis = value;
 	}
 }
 

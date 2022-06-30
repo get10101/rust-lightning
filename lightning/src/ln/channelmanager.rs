@@ -23,6 +23,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
+use bitcoin::Script;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -52,7 +53,7 @@ use crate::ln::onion_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient};
+use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, Recipient, ExtraSign};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::events;
@@ -71,6 +72,8 @@ use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, FairRwLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
+
+use super::msgs::{CommitmentSigned, RevokeAndACK};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -1228,6 +1231,15 @@ pub struct ChannelDetails {
 	///
 	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
 	pub config: Option<ChannelConfig>,
+	///
+	pub fee_rate_per_kw: u32,
+	///
+	// this can trigger a panic when listing channel and not set yet, should use option probably.
+	pub funding_redeemscript: Option<Script>,
+	///
+	pub holder_funding_pubkey: PublicKey,
+	///
+	pub counter_funding_pubkey: PublicKey,
 }
 
 impl ChannelDetails {
@@ -1749,6 +1761,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				let balance = channel.get_available_balances();
 				let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 					channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+				let funding_redeemscript = if channel.channel_transaction_parameters.counterparty_parameters.is_some() {
+					Some(channel.get_funding_redeemscript())
+				} else {
+					None
+				};
 				res.push(ChannelDetails {
 					channel_id: (*channel_id).clone(),
 					counterparty: ChannelCounterparty {
@@ -1789,6 +1806,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
 					inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
 					config: Some(channel.config()),
+					fee_rate_per_kw: channel.get_feerate(),
+					funding_redeemscript,
+					holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
+					counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
 				});
 			}
 		}
@@ -1838,6 +1859,110 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		});
 	}
 
+	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
+		if value_to_self_msat > channel_value_satoshis * 1000 {
+			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
+		}
+
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(mut chan_entry) = channel_state.by_id.entry(channel_id.clone()) {
+			let chan = chan_entry.get_mut();
+			if chan.get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+			let old_funding_outpoint = chan.channel_transaction_parameters.funding_outpoint.unwrap();
+			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
+			chan.channel_transaction_parameters.original_funding_outpoint = Some(old_funding_outpoint.clone());
+
+			chan.set_value_satoshis(channel_value_satoshis);
+			chan.set_value_to_self(value_to_self_msat);
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(old_funding_outpoint, *funding_outpoint) { 
+				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() }); 
+			}
+
+			let (commitment_signed, monitor_update) = chan.send_commitment_no_status_check(&self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
+
+			self.chain_monitor.update_channel(old_funding_outpoint, monitor_update);
+
+			return Ok(commitment_signed)
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn on_commitment_signed_get_raa_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
+		let commitment_signed = msgs::CommitmentSigned {
+			channel_id: *channel_id,
+			signature: *commitment_signature,
+			htlc_signatures: htlc_signatures.to_vec(),
+		};
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(channel_id.clone()) {
+			let chan = chan.get_mut();
+			if chan.get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+			let (revoke_and_ack, _, monitor_update) =
+			match chan.commitment_signed(&commitment_signed, &self.logger) {
+				Err((None, e)) => panic!("{:?}", e),
+				Err((Some(_), _)) => {
+					assert!(chan.is_awaiting_monitor_update());
+					// let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), update);
+					// try_chan_entry!(self, Err(e), channel_state, chan);
+					unreachable!();
+				},
+				Ok(res) => res
+			};
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(chan.get_original_funding_txo().unwrap(), monitor_update) {
+				return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
+			}
+
+			Ok(revoke_and_ack)
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn revoke_and_ack_commitment_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(channel_id.clone()) {
+			if chan.get().get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+			
+			let updates = chan.get_mut().revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), updates.monitor_update) {
+				return Err(APIError::APIMisuseError { err: "Could not update the channel".to_string() });
+			}
+
+			Ok(())
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn sign_with_fund_key_callback_internal<SF>(&self, channel_id: &[u8; 32], cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(chan) = channel_state.by_id.entry(channel_id.clone()) {
+			chan.get().holder_signer.sign_with_fund_key_callback(cb);
+			return Ok(());
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -1865,7 +1990,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_original_funding_txo().unwrap(), monitor_update);
 						let (result, is_permanent) =
 							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 						if is_permanent {
@@ -1946,6 +2071,26 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, Some(target_feerate_sats_per_1000_weight))
+	}
+
+	///
+	pub fn get_updated_funding_outpoint_commitment_signed(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
+		self.get_updated_funding_outpoint_commitment_signed_internal(channel_id, counter_party_node_id, funding_outpoint, channel_value_satoshis, value_to_self_msat)
+	}
+
+	///
+	pub fn on_commitment_signed_get_raa(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<RevokeAndACK, APIError> {
+		self.on_commitment_signed_get_raa_internal(channel_id, counter_party_node_id, commitment_signature, htlc_signatures)
+	}
+
+	///
+	pub fn revoke_and_ack_commitment(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		self.revoke_and_ack_commitment_internal(channel_id, counter_party_node_id, revoke_and_ack)
+	}
+
+	///
+	pub fn sign_with_fund_key_callback<SF>(&self, channel_id: &[u8; 32], cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
+		self.sign_with_fund_key_callback_internal(channel_id, cb)
 	}
 
 	#[inline]
@@ -2478,7 +2623,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						chan)
 				} {
 					Some((update_add, commitment_signed, monitor_update)) => {
-						let update_err = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update);
+						let update_err = self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), monitor_update);
 						let chan_id = chan.get().channel_id();
 						match (update_err,
 							handle_monitor_update_res!(self, update_err, chan,
@@ -4218,7 +4363,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			match chan.get_mut().get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &self.logger) {
 				Ok(msgs_monitor_option) => {
 					if let UpdateFulfillCommitFetch::NewClaim { msgs, htlc_value_msat, monitor_update } = msgs_monitor_option {
-						match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+						match self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), monitor_update) {
 							ChannelMonitorUpdateStatus::Completed => {},
 							e => {
 								log_given_level!(self.logger, if e == ChannelMonitorUpdateStatus::PermanentFailure { Level::Error } else { Level::Debug },
@@ -4253,7 +4398,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					}
 				},
 				Err((e, monitor_update)) => {
-					match self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
+					match self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), monitor_update) {
 						ChannelMonitorUpdateStatus::Completed => {},
 						e => {
 							// TODO: This needs to be handled somehow - if we receive a monitor update
@@ -4715,7 +4860,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		};
 		// Because we have exclusive ownership of the channel here we can release the channel_state
 		// lock before watch_channel
-		match self.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor) {
+		match self.chain_monitor.watch_channel(monitor.get_original_funding_txo().0, monitor) {
 			ChannelMonitorUpdateStatus::Completed => {},
 			ChannelMonitorUpdateStatus::PermanentFailure => {
 				// Note that we reply with the new channel_id in error messages if we gave up on the
@@ -4873,7 +5018,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 					// Update the monitor with the shutdown script if necessary.
 					if let Some(monitor_update) = monitor_update {
-						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update);
+						let update_res = self.chain_monitor.update_channel(chan_entry.get().get_original_funding_txo().unwrap(), monitor_update);
 						let (result, is_permanent) =
 							handle_monitor_update_res!(self, update_res, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 						if is_permanent {
@@ -5062,13 +5207,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 						Err((None, e)) => try_chan_entry!(self, Err(e), chan),
 						Err((Some(update), e)) => {
 							assert!(chan.get().is_awaiting_monitor_update());
-							let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), update);
+							let _ = self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), update);
 							try_chan_entry!(self, Err(e), chan);
 							unreachable!();
 						},
 						Ok(res) => res
 					};
-				let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update);
+				let update_res = self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), monitor_update);
 				if let Err(e) = handle_monitor_update_res!(self, update_res, chan, RAACommitmentOrder::RevokeAndACKFirst, true, commitment_signed.is_some()) {
 					return Err(e);
 				}
@@ -5202,7 +5347,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					let raa_updates = break_chan_entry!(self,
 						chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					htlcs_to_fail = raa_updates.holding_cell_failed_htlcs;
-					let update_res = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), raa_updates.monitor_update);
+					let update_res = self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), raa_updates.monitor_update);
 					if was_paused_for_mon_update {
 						assert!(update_res != ChannelMonitorUpdateStatus::Completed);
 						assert!(raa_updates.commitment_update.is_none());
@@ -5481,7 +5626,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 							));
 						}
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
-							match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
+							match self.chain_monitor.update_channel(chan.get_original_funding_txo().unwrap(), monitor_update) {
 								ChannelMonitorUpdateStatus::Completed => {
 									pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
 										node_id: chan.get_counterparty_node_id(),
@@ -6614,6 +6759,9 @@ impl Writeable for ChannelDetails {
 			(33, self.inbound_htlc_minimum_msat, option),
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(38, self.funding_redeemscript, required),
+			(39, self.holder_funding_pubkey, required),
+			(40, self.counter_funding_pubkey, required)
 		});
 		Ok(())
 	}
@@ -6649,6 +6797,10 @@ impl Readable for ChannelDetails {
 			(33, inbound_htlc_minimum_msat, option),
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(38, fee_rate_per_kw, required),
+			(39, funding_redeemscript, required),
+			(40, holder_funding_pubkey, required),
+			(41, counter_funding_pubkey, required)
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6682,6 +6834,10 @@ impl Readable for ChannelDetails {
 			is_public: is_public.0.unwrap(),
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
+			fee_rate_per_kw: fee_rate_per_kw.0.unwrap(),
+			funding_redeemscript: funding_redeemscript.0.unwrap(),
+			holder_funding_pubkey: holder_funding_pubkey.0.unwrap(),
+			counter_funding_pubkey: counter_funding_pubkey.0.unwrap(),
 		})
 	}
 }
@@ -7235,7 +7391,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			mut channel_monitors: Vec<&'a mut ChannelMonitor<<K::Target as KeysInterface>::Signer>>) -> Self {
 		Self {
 			keys_manager, fee_estimator, chain_monitor, tx_broadcaster, logger, default_config,
-			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
+			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_original_funding_txo().0, monitor) }).collect()
 		}
 	}
 }
@@ -7281,7 +7437,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
 			let mut channel: Channel<<K::Target as KeysInterface>::Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
-			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			let funding_txo = channel.get_original_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_holder_commitment_transaction_number() < monitor.get_cur_holder_commitment_number() ||
@@ -7492,7 +7648,7 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
-				if by_id.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
+				if by_id.get(&monitor.get_original_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, htlc) in monitor.get_pending_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
 							if path.is_empty() {

@@ -107,7 +107,7 @@ impl FilesystemPersister {
 			let mut buffer = Cursor::new(&contents);
 			match <(BlockHash, ChannelMonitor<<K::Target as KeysInterface>::Signer>)>::read(&mut buffer, &*keys_manager) {
 				Ok((blockhash, channel_monitor)) => {
-					if channel_monitor.get_funding_txo().0.txid != txid.unwrap() || channel_monitor.get_funding_txo().0.index != index.unwrap() {
+					if channel_monitor.get_original_funding_txo().0.txid != txid.unwrap() || channel_monitor.get_original_funding_txo().0.index != index.unwrap() {
 						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "ChannelMonitor was stored in the wrong file"));
 					}
 					res.push((blockhash, channel_monitor));
