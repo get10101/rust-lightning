@@ -275,7 +275,7 @@ pub trait ChannelSigner {
 /// policies in order to be secure. Please refer to the [VLS Policy
 /// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
 /// for an example of such policies.
-pub trait EcdsaChannelSigner: ChannelSigner {
+pub trait EcdsaChannelSigner: ChannelSigner + ExtraSign  {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.
@@ -426,6 +426,14 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 pub trait WriteableEcdsaChannelSigner: EcdsaChannelSigner + Writeable {}
+
+///
+pub trait ExtraSign {
+	///
+	fn sign_with_fund_key_callback<F>(&self, cb: &mut F) where F: FnMut(&SecretKey);
+	///
+	fn set_channel_value_satoshis(&mut self, value: u64);
+}
 
 /// Specifies the recipient of an invoice.
 ///
@@ -893,6 +901,16 @@ impl EcdsaChannelSigner for InMemorySigner {
 	) -> Result<Signature, ()> {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(sign(secp_ctx, &msghash, &self.funding_key))
+	}
+}
+
+impl ExtraSign for InMemorySigner {
+	fn sign_with_fund_key_callback<F>(&self, cb: &mut F) where F: FnMut(&SecretKey) {
+		cb(&self.funding_key);
+    }
+
+	fn set_channel_value_satoshis(&mut self, value: u64) {
+		self.channel_value_satoshis = value;
 	}
 }
 

@@ -724,6 +724,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	channel_keys_id: [u8; 32],
 	holder_revocation_basepoint: PublicKey,
 	funding_info: (OutPoint, Script),
+	original_funding_info: Option<(OutPoint, Script)>,
 	current_counterparty_commitment_txid: Option<Txid>,
 	prev_counterparty_commitment_txid: Option<Txid>,
 
@@ -905,6 +906,13 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		writer.write_all(&self.funding_info.0.txid[..])?;
 		writer.write_all(&self.funding_info.0.index.to_be_bytes())?;
 		self.funding_info.1.write(writer)?;
+		if let Some(ref original_funding_info) = self.original_funding_info {
+			writer.write_all(&[0; 1])?;
+			original_funding_info.0.write(writer)?;
+			original_funding_info.1.write(writer)?;
+		} else {
+			writer.write_all(&[1; 1])?;
+		}
 		self.current_counterparty_commitment_txid.write(writer)?;
 		self.prev_counterparty_commitment_txid.write(writer)?;
 
@@ -1111,6 +1119,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			channel_keys_id,
 			holder_revocation_basepoint,
 			funding_info,
+			original_funding_info: None,
 			current_counterparty_commitment_txid: None,
 			prev_counterparty_commitment_txid: None,
 
@@ -1173,6 +1182,15 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	) where L::Target: Logger {
 		self.inner.lock().unwrap().provide_latest_counterparty_commitment_tx(
 			txid, htlc_outputs, commitment_number, their_per_commitment_point, logger)
+	}
+
+	pub(crate) fn update_funding_info(&self, fund_outpoint: OutPoint) {
+		let mut inner = self.inner.lock().unwrap();
+		// inner.outputs_to_watch.remove(inner.get_funding_txo());
+		let script = inner.funding_info.1.clone();
+		inner.original_funding_info = Some((inner.funding_info.0.clone(), inner.funding_info.1.clone()));
+		inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
+		inner.funding_info = (fund_outpoint, script);
 	}
 
 	#[cfg(test)]
@@ -1240,6 +1258,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> (OutPoint, Script) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
+	}
+
+	///
+	pub fn get_original_funding_txo(&self) -> (OutPoint, Script) {
+		self.inner.lock().unwrap().get_original_funding_txo().clone()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -2378,6 +2401,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	pub fn get_funding_txo(&self) -> &(OutPoint, Script) {
 		&self.funding_info
+	}
+
+	pub fn get_original_funding_txo(&self) -> &(OutPoint, Script) {
+		&self.original_funding_info.as_ref().unwrap_or(&self.funding_info)
 	}
 
 	pub fn get_outputs_to_watch(&self) -> &HashMap<Txid, Vec<(u32, Script)>> {
@@ -3738,6 +3765,16 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			index: Readable::read(reader)?,
 		};
 		let funding_info = (outpoint, Readable::read(reader)?);
+		let original_funding_info = match <u8 as Readable>::read(reader)? {
+			0 => {
+				let outpoint = Readable::read(reader)?;
+				let script = Readable::read(reader)?;
+				Some((outpoint, script))
+			},
+			1 => { None },
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
 		let current_counterparty_commitment_txid = Readable::read(reader)?;
 		let prev_counterparty_commitment_txid = Readable::read(reader)?;
 
@@ -3934,6 +3971,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			channel_keys_id,
 			holder_revocation_basepoint,
 			funding_info,
+			original_funding_info,
 			current_counterparty_commitment_txid,
 			prev_counterparty_commitment_txid,
 
@@ -4198,6 +4236,7 @@ mod tests {
 			funding_outpoint: Some(funding_outpoint),
 			opt_anchors: None,
 			opt_non_zero_fee_anchors: None,
+			original_funding_outpoint: None,
 		};
 		// Prune with one old state and a holder commitment tx holding a few overlaps with the
 		// old state.

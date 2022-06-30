@@ -296,6 +296,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// [`update_monitor`]: channelmonitor::ChannelMonitor::update_monitor
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
 
+	/// Update the outpoint funding the channel.
+	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint) -> ChannelMonitorUpdateStatus;
+
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
 	///

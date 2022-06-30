@@ -107,7 +107,7 @@ impl FilesystemPersister {
 			let mut buffer = Cursor::new(&contents);
 			match <(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::Signer>)>::read(&mut buffer, (&*entropy_source, &*signer_provider)) {
 				Ok((blockhash, channel_monitor)) => {
-					if channel_monitor.get_funding_txo().0.txid != txid || channel_monitor.get_funding_txo().0.index != index {
+					if channel_monitor.get_original_funding_txo().0.txid != txid || channel_monitor.get_original_funding_txo().0.index != index {
 						return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
 									       "ChannelMonitor was stored in the wrong file"));
 					}

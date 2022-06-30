@@ -832,6 +832,8 @@ pub struct ChannelTransactionParameters {
 	/// It is intended merely for backwards compatibility with signers that need it.
 	/// There is no support for this feature in LDK channel negotiation.
 	pub opt_non_zero_fee_anchors: Option<()>,
+	///
+	pub original_funding_outpoint: Option<chain::transaction::OutPoint>,
 }
 
 /// Late-bound per-channel counterparty data used to build transactions.
@@ -887,6 +889,7 @@ impl_writeable_tlv_based!(ChannelTransactionParameters, {
 	(8, funding_outpoint, option),
 	(10, opt_anchors, option),
 	(12, opt_non_zero_fee_anchors, option),
+	(14, original_funding_outpoint, option),
 });
 
 /// Static channel fields used to build transactions given per-commitment fields, organized by
@@ -1011,6 +1014,7 @@ impl HolderCommitmentTransaction {
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			opt_anchors: None,
 			opt_non_zero_fee_anchors: None,
+			original_funding_outpoint: None,
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
 		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &channel_parameters.as_counterparty_broadcastable());
@@ -1671,6 +1675,7 @@ mod tests {
 			funding_outpoint: Some(chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 }),
 			opt_anchors: None,
 			opt_non_zero_fee_anchors: None,
+			original_funding_outpoint: None,
 		};
 
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();

@@ -644,6 +644,28 @@ where C::Target: chain::Filter,
 		persist_res
 	}
 
+	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint) -> ChannelMonitorUpdateStatus {
+		let mut monitors = self.monitors.write().unwrap();
+		let monitor_opt = monitors.get_mut(&old_funding_txo);
+		match monitor_opt {
+			None => {
+				log_error!(self.logger, "Failed to update channel monitor funding txo: no such monitor registered");
+
+				// We should never ever trigger this from within ChannelManager. Technically a
+				// user could use this object with some proxying in between which makes this
+				// possible, but in tests and fuzzing, this should be a panic.
+				#[cfg(any(test, fuzzing))]
+				panic!("ChannelManager generated a channel update for a channel that was not yet registered!");
+				#[cfg(not(any(test, fuzzing)))]
+				return ChannelMonitorUpdateStatus::PermanentFailure;
+			},
+			Some(monitor_state) => {
+				monitor_state.monitor.update_funding_info(new_funding_txo);
+				return ChannelMonitorUpdateStatus::Completed;
+			}
+		}
+	}
+
 	/// Note that we persist the given `ChannelMonitor` update while holding the
 	/// `ChainMonitor` monitors lock.
 	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
@@ -725,7 +747,7 @@ where C::Target: chain::Filter,
 				}
 				let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
 				if monitor_events.len() > 0 {
-					let monitor_outpoint = monitor_state.monitor.get_funding_txo().0;
+					let monitor_outpoint = monitor_state.monitor.get_original_funding_txo().0;
 					let counterparty_node_id = monitor_state.monitor.get_counterparty_node_id();
 					pending_monitor_events.push((monitor_outpoint, monitor_events, counterparty_node_id));
 				}

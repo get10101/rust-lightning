@@ -21,6 +21,7 @@ use bitcoin::blockdata::block::BlockHeader;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::constants::Network;
+use bitcoin::Script;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -53,7 +54,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VA
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment};
 use crate::ln::wire::Encode;
-use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner};
+use crate::chain::keysinterface::{EntropySource, KeysManager, NodeSigner, Recipient, SignerProvider, ChannelSigner, ExtraSign};
 use crate::util::config::{UserConfig, ChannelConfig};
 use crate::util::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::util::events;
@@ -77,6 +78,7 @@ use core::ops::Deref;
 
 // Re-export this for use in the public API.
 pub use crate::ln::outbound_payment::{PaymentSendFailure, Retry, RetryableSendFailure};
+use super::msgs::{CommitmentSigned, RevokeAndACK};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -1207,6 +1209,15 @@ pub struct ChannelDetails {
 	///
 	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
 	pub config: Option<ChannelConfig>,
+	///
+	pub fee_rate_per_kw: u32,
+	///
+	// this can trigger a panic when listing channel and not set yet, should use option probably.
+	pub funding_redeemscript: Option<Script>,
+	///
+	pub holder_funding_pubkey: PublicKey,
+	///
+	pub counter_funding_pubkey: PublicKey,
 }
 
 impl ChannelDetails {
@@ -1720,6 +1731,11 @@ where
 					let balance = channel.get_available_balances();
 					let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
 						channel.get_holder_counterparty_selected_channel_reserve_satoshis();
+					let funding_redeemscript = if channel.channel_transaction_parameters.counterparty_parameters.is_some() {
+						Some(channel.get_funding_redeemscript())
+					} else {
+						None
+					};
 					res.push(ChannelDetails {
 						channel_id: (*channel_id).clone(),
 						counterparty: ChannelCounterparty {
@@ -1760,6 +1776,10 @@ where
 						inbound_htlc_minimum_msat: Some(channel.get_holder_htlc_minimum_msat()),
 						inbound_htlc_maximum_msat: channel.get_holder_htlc_maximum_msat(),
 						config: Some(channel.config()),
+						fee_rate_per_kw: channel.get_feerate(),
+						funding_redeemscript,
+						holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
+						counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
 					});
 				}
 			}
@@ -1830,6 +1850,127 @@ where
 		});
 	}
 
+	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
+		if value_to_self_msat > channel_value_satoshis * 1000 {
+			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
+		}
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			let chan = chan_entry.get_mut();
+			if chan.get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+			let old_funding_outpoint = chan.channel_transaction_parameters.funding_outpoint.unwrap();
+			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
+			chan.channel_transaction_parameters.original_funding_outpoint = Some(old_funding_outpoint.clone());
+
+			chan.set_value_satoshis(channel_value_satoshis);
+			chan.set_value_to_self(value_to_self_msat);
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(old_funding_outpoint, *funding_outpoint) {
+				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
+			}
+
+			let (commitment_signed, _) = chan.send_commitment_no_state_update(&self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
+
+			return Ok(commitment_signed)
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn on_commitment_signed_get_raa_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
+		let commitment_signed = msgs::CommitmentSigned {
+			channel_id: *channel_id,
+			signature: *commitment_signature,
+			htlc_signatures: htlc_signatures.to_vec(),
+		};
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			let chan = chan.get_mut();
+			if chan.get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+			let original_funding_txo = chan.get_original_funding_txo().unwrap();
+			let monitor_update =
+			match chan.commitment_signed(&commitment_signed, &self.logger) {
+				Err(e) => return Err(APIError::APIMisuseError { err: format!("Invalid commitment signed: {:?}", e) }),
+				Ok(res) => res
+			};
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, monitor_update) {
+				return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
+			}
+
+			let revoke_and_ack = chan.get_last_revoke_and_ack();
+
+			Ok(revoke_and_ack)
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn revoke_and_ack_commitment_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			let chan = chan.get_mut();
+			if chan.get_counterparty_node_id() != *counter_party_node_id {
+				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			}
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+			let original_funding_txo = chan.get_original_funding_txo().unwrap();
+			let updates = chan.revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
+
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, updates.1) {
+				return Err(APIError::APIMisuseError { err: "Could not update the channel".to_string() });
+			}
+
+			Ok(())
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
+	fn sign_with_fund_key_callback_internal<SF>(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			chan.get().holder_signer.sign_with_fund_key_callback(cb);
+			return Ok(());
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+	}
+
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -1844,7 +1985,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
-					let funding_txo_opt = chan_entry.get().get_funding_txo();
+					let funding_txo_opt = chan_entry.get().get_original_funding_txo();
 					let their_features = &peer_state.latest_features;
 					let (shutdown_msg, mut monitor_update_opt, htlcs) = chan_entry.get_mut()
 						.get_shutdown(&self.signer_provider, their_features, target_feerate_sats_per_1000_weight)?;
@@ -1932,6 +2073,26 @@ where
 	/// [`Normal`]: crate::chain::chaininterface::ConfirmationTarget::Normal
 	pub fn close_channel_with_target_feerate(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: u32) -> Result<(), APIError> {
 		self.close_channel_internal(channel_id, counterparty_node_id, Some(target_feerate_sats_per_1000_weight))
+	}
+
+	///
+	pub fn get_updated_funding_outpoint_commitment_signed(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
+		self.get_updated_funding_outpoint_commitment_signed_internal(channel_id, counter_party_node_id, funding_outpoint, channel_value_satoshis, value_to_self_msat)
+	}
+
+	///
+	pub fn on_commitment_signed_get_raa(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<RevokeAndACK, APIError> {
+		self.on_commitment_signed_get_raa_internal(channel_id, counter_party_node_id, commitment_signature, htlc_signatures)
+	}
+
+	///
+	pub fn revoke_and_ack_commitment(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		self.revoke_and_ack_commitment_internal(channel_id, counter_party_node_id, revoke_and_ack)
+	}
+
+	///
+	pub fn sign_with_fund_key_callback<SF>(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
+		self.sign_with_fund_key_callback_internal(channel_id, counter_party_node_id, cb)
 	}
 
 	#[inline]
@@ -2477,7 +2638,7 @@ where
 				if !chan.get().is_live() {
 					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
 				}
-				let funding_txo = chan.get().get_funding_txo().unwrap();
+				let funding_txo = chan.get().get_original_funding_txo().unwrap();
 				let send_res = chan.get_mut().send_htlc_and_commit(htlc_msat, payment_hash.clone(),
 					htlc_cltv, HTLCSource::OutboundRoute {
 						path: path.clone(),
@@ -4858,7 +5019,7 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
-				let funding_txo = chan.get().get_funding_txo();
+				let funding_txo = chan.get().get_original_funding_txo();
 				let monitor_update = try_chan_entry!(self, chan.get_mut().commitment_signed(&msg, &self.logger), chan);
 				let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
 				let update_id = monitor_update.update_id;
@@ -4977,7 +5138,7 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
-					let funding_txo = chan.get().get_funding_txo();
+					let funding_txo = chan.get().get_original_funding_txo();
 					let (htlcs_to_fail, monitor_update) = try_chan_entry!(self, chan.get_mut().revoke_and_ack(&msg, &self.logger), chan);
 					let update_res = self.chain_monitor.update_channel(funding_txo.unwrap(), monitor_update);
 					let update_id = monitor_update.update_id;
@@ -5252,7 +5413,7 @@ where
 					let peer_state: &mut PeerState<_> = &mut *peer_state_lock;
 					for (channel_id, chan) in peer_state.channel_by_id.iter_mut() {
 						let counterparty_node_id = chan.get_counterparty_node_id();
-						let funding_txo = chan.get_funding_txo();
+						let funding_txo = chan.get_original_funding_txo();
 						let (monitor_opt, holding_cell_failed_htlcs) =
 							chan.maybe_free_holding_cell_htlcs(&self.logger);
 						if !holding_cell_failed_htlcs.is_empty() {
@@ -6544,6 +6705,9 @@ impl Writeable for ChannelDetails {
 			(33, self.inbound_htlc_minimum_msat, option),
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(38, self.funding_redeemscript, required),
+			(39, self.holder_funding_pubkey, required),
+			(40, self.counter_funding_pubkey, required)
 		});
 		Ok(())
 	}
@@ -6579,6 +6743,10 @@ impl Readable for ChannelDetails {
 			(33, inbound_htlc_minimum_msat, option),
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
+			(38, fee_rate_per_kw, required),
+			(39, funding_redeemscript, required),
+			(40, holder_funding_pubkey, required),
+			(41, counter_funding_pubkey, required)
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6612,6 +6780,10 @@ impl Readable for ChannelDetails {
 			is_public: is_public.0.unwrap(),
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
+			fee_rate_per_kw: fee_rate_per_kw.0.unwrap(),
+			funding_redeemscript: funding_redeemscript.0.unwrap(),
+			holder_funding_pubkey: holder_funding_pubkey.0.unwrap(),
+			counter_funding_pubkey: counter_funding_pubkey.0.unwrap(),
 		})
 	}
 }
@@ -7206,7 +7378,7 @@ where
 			mut channel_monitors: Vec<&'a mut ChannelMonitor<<SP::Target as SignerProvider>::Signer>>) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster, router, logger, default_config,
-			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) }).collect()
+			channel_monitors: channel_monitors.drain(..).map(|monitor| { (monitor.get_original_funding_txo().0, monitor) }).collect()
 		}
 	}
 }
@@ -7262,7 +7434,7 @@ where
 			let mut channel: Channel<<SP::Target as SignerProvider>::Signer> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
 			))?;
-			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
+			let funding_txo = channel.get_original_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				if channel.get_cur_holder_commitment_transaction_number() < monitor.get_cur_holder_commitment_number() ||
@@ -7499,7 +7671,7 @@ where
 			// We only rebuild the pending payments map if we were most recently serialized by
 			// 0.0.102+
 			for (_, monitor) in args.channel_monitors.iter() {
-				if id_to_peer.get(&monitor.get_funding_txo().0.to_channel_id()).is_none() {
+				if id_to_peer.get(&monitor.get_original_funding_txo().0.to_channel_id()).is_none() {
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, payment_secret, .. } = htlc_source {
 							if path.is_empty() {
