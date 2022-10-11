@@ -129,21 +129,21 @@ impl ValidatedBlockHeader {
 			return Err(BlockSourceError::persistent("invalid block height"));
 		}
 
-		let work = self.header.work();
-		if self.chainwork != previous_header.chainwork + work {
-			return Err(BlockSourceError::persistent("invalid chainwork"));
-		}
+		// let work = self.header.work();
+		// if self.chainwork != previous_header.chainwork + work {
+		// 	return Err(BlockSourceError::persistent("invalid chainwork"));
+		// }
 
-		if let Network::Bitcoin = network {
-			if self.height % 2016 == 0 {
-				let previous_work = previous_header.header.work();
-				if work > (previous_work << 2) || work < (previous_work >> 2) {
-					return Err(BlockSourceError::persistent("invalid difficulty transition"))
-				}
-			} else if self.header.bits != previous_header.header.bits {
-				return Err(BlockSourceError::persistent("invalid difficulty"))
-			}
-		}
+		// if let Network::Bitcoin = network {
+		// 	if self.height % 2016 == 0 {
+		// 		let previous_work = previous_header.header.work();
+		// 		if work > (previous_work << 2) || work < (previous_work >> 2) {
+		// 			return Err(BlockSourceError::persistent("invalid difficulty transition"))
+		// 		}
+		// 	} else if self.header.bits != previous_header.header.bits {
+		// 		return Err(BlockSourceError::persistent("invalid difficulty"))
+		// 	}
+		// }
 
 		Ok(())
 	}
