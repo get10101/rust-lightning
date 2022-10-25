@@ -1054,7 +1054,7 @@ mod test {
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			let fwd_idx = match events[0] {
-				MessageSendEvent::UpdateHTLCs { node_id, .. } => {
+				MessageSendEvent::UpdateCommitmentOutputs { node_id, .. } => {
 					if node_id == nodes[1].node.get_our_node_id() {
 						1
 					} else { 2 }

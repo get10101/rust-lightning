@@ -1206,14 +1206,16 @@ pub enum MessageSendEvent {
 		/// The announcement_signatures message which should be sent.
 		msg: msgs::AnnouncementSignatures,
 	},
-	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
+	/// Used to indicate that a series of commitment output update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.
-	UpdateHTLCs {
+	UpdateCommitmentOutputs {
 		/// The node_id of the node which should receive these message(s)
 		node_id: PublicKey,
 		/// The update messages which should be sent. ALL messages in the struct should be sent!
 		updates: msgs::CommitmentUpdate,
 	},
+        /// Used to indicate that a series of custom output update messages, as well as a
+        /// commitment_signed message should be sent to the peer with the given node_id.
 	/// Used to indicate that a revoke_and_ack message should be sent to the peer with the given node_id.
 	SendRevokeAndACK {
 		/// The node_id of the node which should receive this message

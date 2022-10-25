@@ -150,7 +150,7 @@ pub(super) enum HTLCForwardInfo {
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub(crate) struct HTLCPreviousHopData {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
@@ -205,7 +205,7 @@ impl Readable for PaymentId {
 }
 /// Tracks the inbound corresponding to an outbound HTLC
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
@@ -839,7 +839,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 
 	keys_manager: K,
 
-	logger: L,
+	pub logger: L,
 }
 
 /// Chain-related parameters used to construct a new `ChannelManager`.
@@ -1538,7 +1538,7 @@ macro_rules! handle_chan_restoration_locked {
 
 			macro_rules! handle_cs { () => {
 				if let Some(update) = $commitment_update {
-					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 						node_id: counterparty_node_id,
 						updates: update,
 					});
@@ -2528,7 +2528,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 
 						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan_id));
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: path.first().unwrap().pubkey,
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: vec![update_add],
@@ -2537,6 +2537,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: None,
 								commitment_signed,
+                                update_add_custom_output: Vec::new(),
 							},
 						});
 					},
@@ -2675,6 +2676,115 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Ok(payment_id)
 		}
 	}
+
+    /// TODO(10101): Add docs
+    pub fn add_custom_output(&self, route: &Route) -> Result<(), String> {
+		if route.paths.len() != 1 {
+			return Err("Only single path routing supported".to_owned());
+		}
+
+		let route_hop = &route.paths.first().unwrap()[0];
+
+		let mut channel_lock = self.channel_state.lock().unwrap();
+		let channel_id = channel_lock
+			.short_to_chan_info
+			.get(&route_hop.short_channel_id)
+			.map(|(_, id)| id)
+			.cloned()
+			.ok_or("No channel available with first hop!".to_owned())?;
+
+		// TODO(10101): Here `send_payment_along_path` checks if the payment is already in
+		// `pending_outbounds` and exits if it's not marked as "retryable". We might have to do
+		// something similar for DLCs
+
+		let channel_holder = &mut *channel_lock;
+		let mut channel = match channel_holder.by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(channel) => channel,
+			hash_map::Entry::Vacant(_) => {
+				return Err("No channel available with peer".to_owned());
+			}
+		};
+
+
+		if channel.get().get_counterparty_node_id() != route_hop.pubkey {
+			return Err("Node ID mismatch".to_owned());
+		}
+
+		if !channel.get().is_live() {
+			return Err("Peer for first hop currently disconnected/pending monitor update!".to_owned());
+		}
+
+		let (update_add, commitment_signed, monitor_update) =
+			match channel.get_mut().add_custom_output_and_commit(route_hop.fee_msat, route_hop.cltv_expiry_delta, &self.logger) {
+				Ok(Some(res)) => res,
+				Ok(None) => {
+					// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
+					// should be used like when adding HTLCs: if the channel reports that it is "in
+					// the middle of something" and it should not be modified, we do nothing. The
+					// work should be queued up in `holding_cell_custom_output_updates`, so it can
+					// be picked up later (yet to be implemented. Consider how
+					// `holding_cell_htlc_updates` is used)
+
+					return Ok(());
+				}
+				Err(e) => {
+					let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
+					if drop {
+						channel.remove_entry();
+					}
+					match handle_error!(self, Result::<(), _>::Err(e), route_hop.pubkey) {
+						Ok(_) => unreachable!(),
+						Err(e) => {
+							return Err(format!("Channel unavailable: {}", e.err));
+						},
+					}
+				},
+			};
+
+		let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+		let channel_id = channel.get().channel_id();
+		match (update_err,
+			   handle_monitor_update_res!(self, update_err, channel_holder, channel,
+					  RAACommitmentOrder::CommitmentFirst, false, true))
+		{
+			(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => return Err(format!("{}", e.err.err)),
+			(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
+				// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
+				// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
+				//     session_privs: HashSet::new(),
+				//     pending_amt_msat: 0,
+				//     pending_fee_msat: Some(0),
+				//     payment_hash: *payment_hash,
+				//     payment_secret: *payment_secret,
+				//     starting_block_height: self.best_block.read().unwrap().height(),
+				//     total_msat: total_value,
+				// });
+				// assert!(payment.insert(session_priv_bytes, path));
+
+				if res.is_err() {
+					return Err("Monitor update in progress".to_owned());
+				}
+			},
+			_ => unreachable!(),
+		}
+
+		log_debug!(self.logger, "Adding custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+			node_id: route_hop.pubkey,
+			updates: msgs::CommitmentUpdate {
+				update_add_htlcs: Vec::new(),
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
+				commitment_signed,
+				update_add_custom_output: vec![update_add],
+			},
+		});
+
+		Ok(())
+    }
 
 	/// Retries a payment along the given [`Route`].
 	///
@@ -3254,7 +3364,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							}
 							log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
 								add_htlc_msgs.len(), fail_htlc_msgs.len(), log_bytes!(chan.get().channel_id()));
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
 									update_add_htlcs: add_htlc_msgs,
@@ -3263,6 +3373,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									update_fail_malformed_htlcs: Vec::new(),
 									update_fee: None,
 									commitment_signed: commitment_msg,
+									update_add_custom_output: Vec::new(),
 								},
 							});
 						}
@@ -3521,7 +3632,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
 				match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
 					ChannelMonitorUpdateStatus::Completed => {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: chan.get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: Vec::new(),
@@ -3529,7 +3640,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_htlcs: Vec::new(),
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: Some(update_fee),
-								commitment_signed,
+							        commitment_signed,
+                                                                update_add_custom_output: Vec::new(),
 							},
 						});
 						Ok(())
@@ -4143,7 +4255,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Some((msg, commitment_signed)) = msgs {
 							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
 								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
 									update_add_htlcs: Vec::new(),
@@ -4151,7 +4263,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									update_fail_htlcs: Vec::new(),
 									update_fail_malformed_htlcs: Vec::new(),
 									update_fee: None,
-									commitment_signed,
+								        commitment_signed,
+                                                                        update_add_custom_output: Vec::new(),
 								}
 							});
 						}
@@ -4824,6 +4937,23 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_holder = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_holder;
+
+		match channel_state.by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut channel) => {
+				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
+				}
+				try_chan_entry!(self, channel.get_mut().update_add_custom_output(&msg, &self.logger), channel_state, channel);
+			},
+			hash_map::Entry::Vacant(_) => todo!(),
+		}
+
+		Ok(())
+	}
+
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let (htlc_source, forwarded_htlc_value) = {
@@ -4905,7 +5035,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					msg: revoke_and_ack,
 				});
 				if let Some(msg) = commitment_signed {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 						node_id: counterparty_node_id.clone(),
 						updates: msgs::CommitmentUpdate {
 							update_add_htlcs: Vec::new(),
@@ -4914,6 +5044,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							update_fail_malformed_htlcs: Vec::new(),
 							update_fee: None,
 							commitment_signed: msg,
+							update_add_custom_output: Vec::new(),
 						},
 					});
 				}
@@ -4994,11 +5125,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						} else { unreachable!(); }
 					}
 					if let Some(updates) = raa_updates.commitment_update {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: counterparty_node_id.clone(),
 							updates,
 						});
 					}
+
 					break Ok((raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
 							raa_updates.finalized_claimed_htlcs,
 							chan.get().get_short_channel_id()
@@ -5258,7 +5390,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
 							match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
 								ChannelMonitorUpdateStatus::Completed => {
-									pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+									pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 										node_id: chan.get_counterparty_node_id(),
 										updates: commitment_update,
 									});
@@ -5999,6 +6131,11 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
+	fn handle_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_fulfill_htlc(counterparty_node_id, msg), *counterparty_node_id);
@@ -6081,7 +6218,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendChannelReady { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::UpdateCommitmentOutputs { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != counterparty_node_id,
@@ -8017,7 +8154,7 @@ pub mod bench {
 				expect_payment_claimed!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
-					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+MessageSendEvent::UpdateCommitmentOutputs { node_id, updates } => {
 						assert_eq!(node_id, $node_a.get_our_node_id());
 						$node_a.handle_update_fulfill_htlc(&$node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 						$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &updates.commitment_signed);

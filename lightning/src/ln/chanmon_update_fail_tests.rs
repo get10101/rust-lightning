@@ -302,7 +302,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	let (bs_initial_fulfill, bs_initial_commitment_signed) = match events_2[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fulfill_htlcs.len(), 1);
@@ -654,7 +654,7 @@ fn test_monitor_update_fail_cs() {
 		_ => panic!("Unexpected event"),
 	}
 	match responses[1] {
-		MessageSendEvent::UpdateHTLCs { ref updates, ref node_id } => {
+		MessageSendEvent::UpdateCommitmentOutputs { ref updates, ref node_id } => {
 			assert!(updates.update_add_htlcs.is_empty());
 			assert!(updates.update_fulfill_htlcs.is_empty());
 			assert!(updates.update_fail_htlcs.is_empty());
@@ -936,7 +936,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 	// Note that the ordering of the events for different nodes is non-prescriptive, though the
 	// ordering of the two events that both go to nodes[2] have to stay in the same order.
 	let messages_a = match events_3.pop().unwrap() {
-		MessageSendEvent::UpdateHTLCs { node_id, mut updates } => {
+		MessageSendEvent::UpdateCommitmentOutputs { node_id, mut updates } => {
 			assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			assert!(updates.update_fulfill_htlcs.is_empty());
 			assert_eq!(updates.update_fail_htlcs.len(), 1);
@@ -1004,7 +1004,7 @@ fn do_test_monitor_update_fail_raa(test_ignore_second_cs: bool) {
 		as_cs = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
 		match bs_revoke_and_commit[1] {
-			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+			MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
 				assert!(updates.update_add_htlcs.is_empty());
 				assert!(updates.update_fail_htlcs.is_empty());
@@ -1364,7 +1364,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	assert_eq!(bs_msgs.len(), 2);
 
 	match bs_msgs[0] {
-		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &updates.commitment_signed);
@@ -2040,7 +2040,7 @@ fn test_pending_update_fee_ack_on_reconnect() {
 	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &as_connect_msg);
 	let bs_resend_msgs = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_resend_msgs.len(), 3);
-	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = bs_resend_msgs[0] {
+	if let MessageSendEvent::UpdateCommitmentOutputs { ref updates, .. } = bs_resend_msgs[0] {
 		assert_eq!(*updates, bs_initial_send_msgs);
 	} else { panic!(); }
 	if let MessageSendEvent::SendRevokeAndACK { ref msg, .. } = bs_resend_msgs[1] {
@@ -2173,7 +2173,7 @@ fn do_update_fee_resend_test(deliver_update: bool, parallel_updates: bool) {
 	let mut as_reconnect_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_reconnect_msgs.len(), 2);
 	if let MessageSendEvent::SendChannelUpdate { .. } = as_reconnect_msgs.pop().unwrap() {} else { panic!(); }
-	let update_msgs = if let MessageSendEvent::UpdateHTLCs { updates, .. } = as_reconnect_msgs.pop().unwrap()
+	let update_msgs = if let MessageSendEvent::UpdateCommitmentOutputs { updates, .. } = as_reconnect_msgs.pop().unwrap()
 		{ updates } else { panic!(); };
 	assert!(update_msgs.update_fee.is_some());
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msgs.update_fee.as_ref().unwrap());
@@ -2379,7 +2379,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	check_added_monitors!(nodes[0], 1);
 
 	let commitment_msg = match events.pop().unwrap() {
-		MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+		MessageSendEvent::UpdateCommitmentOutputs { node_id, updates } => {
 			assert_eq!(node_id, nodes[1].node.get_our_node_id());
 			assert!(updates.update_fail_htlcs.is_empty());
 			assert!(updates.update_fail_malformed_htlcs.is_empty());
@@ -2686,7 +2686,7 @@ fn double_temp_error() {
 	assert_eq!(events.len(), 1);
 	let (update_fulfill_1, commitment_signed_b1, node_id) = {
 		match &events[0] {
-			&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_htlcs.is_empty());
@@ -2717,7 +2717,7 @@ fn double_temp_error() {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		(match &events[0] {
-			MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id, updates } => {
 				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 				assert!(updates.update_add_htlcs.is_empty());
 				assert!(updates.update_fail_htlcs.is_empty());

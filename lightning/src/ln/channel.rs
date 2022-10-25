@@ -28,7 +28,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
+use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction, CustomOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
@@ -221,6 +221,25 @@ struct OutboundHTLCOutput {
 	source: HTLCSource,
 }
 
+struct CustomOutput {
+	custom_output_id: u64,
+	amount_msat: u64, // TODO(10101): We need to model dual-funded outputs
+	cltv_expiry: u32,
+	state: CustomOutputState,
+}
+
+// TODO(10101): The variants are tentative
+enum CustomOutputState {
+	LocalAnnounced, // TODO(10101): Might need to add `Box<msgs::OnionPacket>` like for `OutboundHTLCState::LocalAnnounced`
+	RemoteAnnounced,
+	// we received RemoteAnnounced and are waiting for the remote to announce the RAA to us.
+	AwaitingRemoteRevoke,
+	Committed,
+	RemoteSettled,
+	AwaitingRemoteRevokeToSettle,
+	AwaitingRemovedRemoteRevoke,
+}
+
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
 	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
@@ -239,6 +258,12 @@ enum HTLCUpdateAwaitingACK {
 		htlc_id: u64,
 		err_packet: msgs::OnionErrorPacket,
 	},
+}
+
+/// See AwaitingRemoteRevoke ChannelState for more info
+struct AddCustomOutputAwaitingAck {
+    amount_msat: u64,
+    cltv_expiry: u32,
 }
 
 /// There are a few "states" and then a number of flags which can be applied:
@@ -353,7 +378,8 @@ struct HTLCStats {
 }
 
 /// An enum gathering stats on commitment transaction, either local or remote.
-struct CommitmentStats<'a> {
+#[derive(Debug)]
+pub struct CommitmentStats<'a> {
 	tx: CommitmentTransaction, // the transaction info
 	feerate_per_kw: u32, // the feerate included to build the transaction
 	total_fee_sat: u64, // the total fee included in the transaction
@@ -540,11 +566,13 @@ pub(super) struct Channel<Signer: Sign> {
 	// cost of others, but should really just be changed.
 
 	cur_holder_commitment_transaction_number: u64,
-	cur_counterparty_commitment_transaction_number: u64,
+	pub cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
+	pending_custom_outputs: Vec<CustomOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
+	holding_cell_custom_output_updates: Vec<AddCustomOutputAwaitingAck>, // TODO(10101): Should we merge with previous field?
 
 	/// When resending CS/RAA messages on channel monitor restoration or on reconnect, we always
 	/// need to ensure we resend them in the order we originally generated them. Note that because
@@ -575,8 +603,10 @@ pub(super) struct Channel<Signer: Sign> {
 	// `pending_update_fee` with the same criteria as outbound HTLC updates but can be updated by
 	// further `send_update_fee` calls, dropping the previous holding cell update entirely.
 	holding_cell_update_fee: Option<u32>,
-	next_holder_htlc_id: u64,
+        next_holder_htlc_id: u64,
+        next_holder_custom_output_id: u64,
 	next_counterparty_htlc_id: u64,
+	next_counterparty_custom_output_id: u64,
 	feerate_per_kw: u32,
 
 	/// The timestamp set on our latest `channel_update` message for this channel. It is updated
@@ -983,11 +1013,15 @@ impl<Signer: Sign> Channel<Signer> {
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
+                        pending_custom_outputs: Vec::new(),
 			holding_cell_htlc_updates: Vec::new(),
+                        holding_cell_custom_output_updates: Vec::new(),
 			pending_update_fee: None,
 			holding_cell_update_fee: None,
-			next_holder_htlc_id: 0,
+		        next_holder_htlc_id: 0,
+                        next_holder_custom_output_id: 0,
 			next_counterparty_htlc_id: 0,
+			next_counterparty_custom_output_id: 0,
 			update_time_counter: 1,
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
@@ -1313,11 +1347,15 @@ impl<Signer: Sign> Channel<Signer> {
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
-			holding_cell_htlc_updates: Vec::new(),
+                        pending_custom_outputs: Vec::new(),
+		        holding_cell_htlc_updates: Vec::new(),
+                        holding_cell_custom_output_updates: Vec::new(),
 			pending_update_fee: None,
 			holding_cell_update_fee: None,
 			next_holder_htlc_id: 0,
+                        next_holder_custom_output_id: 0,
 			next_counterparty_htlc_id: 0,
+			next_counterparty_custom_output_id: 0,
 			update_time_counter: 1,
 
 			resend_order: RAACommitmentOrder::CommitmentFirst,
@@ -1420,12 +1458,14 @@ impl<Signer: Sign> Channel<Signer> {
 	/// generated by the peer which proposed adding the HTLCs, and thus we need to understand both
 	/// which peer generated this transaction and "to whom" this transaction flows.
 	#[inline]
-	fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> CommitmentStats
+	pub fn build_commitment_transaction<L: Deref>(&self, commitment_number: u64, keys: &TxCreationKeys, local: bool, generated_by_local: bool, logger: &L) -> CommitmentStats
 		where L::Target: Logger
 	{
 		let mut included_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::new();
 		let num_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
 		let mut included_non_dust_htlcs: Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)> = Vec::with_capacity(num_htlcs);
+
+		let mut included_custom_outputs: Vec<CustomOutputInCommitment> = Vec::with_capacity(self.pending_custom_outputs.len());
 
 		let broadcaster_dust_limit_satoshis = if local { self.holder_dust_limit_satoshis } else { self.counterparty_dust_limit_satoshis };
 		let mut remote_htlc_total_msat = 0;
@@ -1564,6 +1604,41 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+                for ref custom_output in self.pending_custom_outputs.iter() {
+			let state_name = match custom_output.state {
+				CustomOutputState::LocalAnnounced => "LocalAnnounced",
+				CustomOutputState::RemoteAnnounced => "RemoteAnnounced",
+				CustomOutputState::AwaitingRemoteRevoke => "AwaitingRemoteRevoke",
+				CustomOutputState::Committed => "Committed",
+				CustomOutputState::RemoteSettled => "RemoteSettled",
+				CustomOutputState::AwaitingRemoteRevokeToSettle => "AwaitingRemoteRevokeToSettle",
+				CustomOutputState::AwaitingRemovedRemoteRevoke => "AwaitingRemovedRemoteRevoke",
+			};
+
+			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
+			
+			// Ignoring inbound or outbound
+			// Ignoring `self.opt_anchors()` for now?
+
+			let custom_output_in_tx = CustomOutputInCommitment {
+				amount_msat: custom_output.amount_msat,
+				cltv_expiry: custom_output.cltv_expiry,
+				transaction_output_index: None,
+			};
+			// let custom_output_tx_fee = feerate_per_kw as u64 * custom_output_tx_weight / 1000;
+			
+			// assume custom output is > dust limit + associated tx fee, therefore always include
+			log_trace!(
+				logger,
+				"   ...including {} custom output {} with value {}",
+				state_name,
+				custom_output.custom_output_id,
+				custom_output.amount_msat
+			);
+			
+			included_custom_outputs.push(custom_output_in_tx);
+		}
+
 		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
@@ -1621,16 +1696,18 @@ impl<Signer: Sign> Channel<Signer> {
 		let channel_parameters =
 			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
 			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
-		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(commitment_number,
-		                                                             value_to_a as u64,
-		                                                             value_to_b as u64,
-		                                                             self.channel_transaction_parameters.opt_anchors.is_some(),
-		                                                             funding_pubkey_a,
-		                                                             funding_pubkey_b,
-		                                                             keys.clone(),
-		                                                             feerate_per_kw,
-		                                                             &mut included_non_dust_htlcs,
-		                                                             &channel_parameters
+		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
+			commitment_number,
+		        value_to_a as u64,
+		        value_to_b as u64,
+		        self.channel_transaction_parameters.opt_anchors.is_some(),
+		        funding_pubkey_a,
+		        funding_pubkey_b,
+		        keys.clone(),
+		        feerate_per_kw,
+		        &mut included_non_dust_htlcs,
+			&mut included_custom_outputs,
+		        &channel_parameters
 		);
 		let mut htlcs_included = included_non_dust_htlcs;
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
@@ -1746,7 +1823,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Creates a set of keys for build_commitment_transaction to generate a transaction which we
 	/// will sign and send to our counterparty.
 	/// If an Err is returned, it is a ChannelError::Close (for get_outbound_funding_created)
-	fn build_remote_transaction_keys(&self) -> Result<TxCreationKeys, ChannelError> {
+	pub fn build_remote_transaction_keys(&self) -> Result<TxCreationKeys, ChannelError> {
 		//TODO: Ensure that the payment_key derived here ends up in the library users' wallet as we
 		//may see payments to it!
 		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
@@ -2862,6 +2939,55 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
+	pub fn update_add_custom_output<L: Deref>(&mut self, msg: &msgs::UpdateAddCustomOutput, logger: &L) -> Result<(), ChannelError>
+	where L::Target: Logger {
+		// We can't accept HTLCs sent after we've sent a shutdown.
+		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if local_sent_shutdown {
+			todo!("Do we have to do something like what `update_add_htlc` does?")
+		}
+
+		// If the remote has sent a shutdown prior to adding this custom output, then they are in violation of the spec (what spec?).
+		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if remote_sent_shutdown {
+			return Err(ChannelError::Close("Got add custom output message when channel was not in an operational state".to_owned()));
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(ChannelError::Close("Peer sent update_add_custom_output when we needed a channel_reestablish".to_owned()));
+		}
+		if msg.amount_msat > self.channel_value_satoshis * 1000 {
+			return Err(ChannelError::Close("Remote side tried to send more than the total value of the channel".to_owned()));
+		}
+		if msg.amount_msat == 0 {
+			return Err(ChannelError::Close("Remote side tried to create a 0-msat custom output".to_owned()));
+		}
+		if msg.amount_msat < self.holder_htlc_minimum_msat {
+			return Err(ChannelError::Close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.holder_htlc_minimum_msat, msg.amount_msat)));
+		}
+
+		// TODO(10101): Introduce checks similar to what we see in `update_add_htlc`
+		
+		if self.next_counterparty_custom_output_id != msg.custom_output_id {
+			return Err(ChannelError::Close(format!("Remote skipped custom output ID (skipped ID: {})", self.next_counterparty_custom_output_id)));
+		}
+		if msg.cltv_expiry >= 500000000 {
+			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
+		}
+
+		// Now update local state:
+		self.next_counterparty_custom_output_id += 1;
+		self.pending_custom_outputs.push(
+			CustomOutput {
+				custom_output_id: msg.custom_output_id,
+				amount_msat: msg.amount_msat,
+				cltv_expiry: msg.cltv_expiry,
+				state: CustomOutputState::RemoteAnnounced
+			}
+		);
+
+		Ok(())
+	}
+
 	/// Marks an outbound HTLC which we have received update_fail/fulfill/malformed
 	#[inline]
 	fn mark_outbound_htlc_removed(&mut self, htlc_id: u64, check_preimage: Option<PaymentPreimage>, fail_reason: Option<HTLCFailReason>) -> Result<&OutboundHTLCOutput, ChannelError> {
@@ -3072,6 +3198,24 @@ impl<Signer: Sign> Channel<Signer> {
 				need_commitment = true;
 			}
 		}
+		for custom_output in self.pending_custom_outputs.iter_mut() {
+			if let CustomOutputState::RemoteAnnounced = custom_output.state {
+				log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevoke due to commitment_signed in channel {}.",
+					custom_output.custom_output_id, log_bytes!(self.channel_id));
+				custom_output.state = CustomOutputState::AwaitingRemoteRevoke;
+				need_commitment = true;
+			}
+			// TODO(10101): we might need this because we merged inbound and outbound
+			// if let &mut CustomOutputState::RemoteSettled = &mut custom_output.state {
+			// 	log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevokeToSettle due to commitment_signed in channel {}.",
+			// 		custom_output.custom_output_id, log_bytes!(self.channel_id));
+			// 	// Grab the preimage, if it exists, instead of cloning
+			// 	// TODO: we might need our own reason here saying the custom output was removed
+			// 	// let mut reason = OutboundHTLCOutcome::Success(None);
+			// 	custom_output.state = CustomOutputState::AwaitingRemoteRevokeToSettle;
+			// 	need_commitment = true;
+			// }
+		}
 
 		self.cur_holder_commitment_transaction_number -= 1;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
@@ -3237,7 +3381,8 @@ impl<Signer: Sign> Channel<Signer> {
 				update_fail_htlcs,
 				update_fail_malformed_htlcs: Vec::new(),
 				update_fee,
-				commitment_signed,
+			        commitment_signed,
+                                update_add_custom_output: Vec::new(),
 			}, monitor_update)), htlcs_to_fail))
 		} else {
 			Ok((None, Vec::new()))
@@ -3497,7 +3642,8 @@ impl<Signer: Sign> Channel<Signer> {
 							update_fail_htlcs,
 							update_fail_malformed_htlcs,
 							update_fee: None,
-							commitment_signed
+						        commitment_signed,
+                                                        update_add_custom_output: Vec::new()
 						}),
 						finalized_claimed_htlcs,
 						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
@@ -3859,7 +4005,8 @@ impl<Signer: Sign> Channel<Signer> {
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
-			commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
+		        commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
+                        update_add_custom_output: Vec::new(),
 		}
 	}
 
@@ -5612,6 +5759,69 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(Some(res))
 	}
 
+	pub fn add_custom_output<L: Deref>(&mut self, amount_msat: u64, cltv_expiry: u32, logger: &L) -> Result<Option<msgs::UpdateAddCustomOutput>, ChannelError> where L::Target: Logger {
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
+			return Err(ChannelError::Ignore("Cannot add custom output until channel is fully established and we haven't started shutting down".to_owned()));
+		}
+
+		let channel_total_msat = self.channel_value_satoshis * 1000;
+		if amount_msat > channel_total_msat {
+			return Err(ChannelError::Ignore(format!("Cannot create custom output with amount {}, because it is more than the total value of the channel {}", amount_msat, channel_total_msat)));
+		}
+
+		if amount_msat == 0 {
+			return Err(ChannelError::Ignore("Cannot create 0-msat custom output".to_owned()));
+		}
+
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) != 0 {
+			// Note that this should never really happen
+			return Err(ChannelError::Ignore("Cannot create custom output while disconnected from channel counterparty".to_owned()));
+		}
+
+		// We only build this to run checks based on the _current_ commitment transaction i.e.
+		// before adding the custom output
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+
+		// TODO(10101): Run similar checks for a custom output. The difference is that the custom outputs should be partially funded by both sides!
+		// if !self.is_outbound() {
+		//     // Check that we won't violate the remote channel reserve by adding this HTLC.
+		//     let htlc_candidate = HTLCCandidate::new(amount_msat, HTLCInitiator::LocalOffered);
+		//     let counterparty_commit_tx_fee_msat = self.next_remote_commit_tx_fee_msat(htlc_candidate, None);
+		//     let holder_selected_chan_reserve_msat = self.holder_selected_channel_reserve_satoshis * 1000;
+		//     if commitment_stats.remote_balance_msat < counterparty_commit_tx_fee_msat + holder_selected_chan_reserve_msat {
+		//     	return Err(ChannelError::Ignore("Cannot send value that would put counterparty balance under holder-announced channel reserve value".to_owned()));
+		//     }
+		// }
+		//
+		// let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
+		// if holder_balance_msat < amount_msat {
+		// 	return Err(ChannelError::Ignore(format!("Cannot send value that would overdraw remaining funds. Amount: {}, pending value to self {}", amount_msat, holder_balance_msat)));
+		// }
+		//
+		// There might be more checks to run. Look at `send_htlc` for inspiration.
+		dbg!("done");
+		// Now update local state:
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+			dbg!("Broke out here");
+			self.holding_cell_custom_output_updates.push(AddCustomOutputAwaitingAck { amount_msat, cltv_expiry });
+			return Ok(None);
+		}
+		dbg!("continued");
+
+		self.pending_custom_outputs.push(CustomOutput { custom_output_id: self.next_holder_custom_output_id, amount_msat, cltv_expiry, state: CustomOutputState::LocalAnnounced });
+
+		let res = msgs::UpdateAddCustomOutput {
+			channel_id: self.channel_id,
+			custom_output_id: self.next_holder_custom_output_id,
+			amount_msat,
+			cltv_expiry,
+		};
+		self.next_holder_custom_output_id += 1;
+
+		Ok(Some(res))
+	}
+
 	/// Creates a signed commitment transaction to send to the remote peer.
 	/// Always returns a ChannelError::Close if an immediately-preceding (read: the
 	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
@@ -5778,6 +5988,16 @@ impl<Signer: Sign> Channel<Signer> {
 				Ok(Some((update_add_htlc, commitment_signed, monitor_update)))
 			},
 			None => Ok(None)
+		}
+	}
+
+	pub fn add_custom_output_and_commit<L: Deref>(&mut self, amount_msat: u64, cltv_expiry: u32, logger: &L) -> Result<Option<(msgs::UpdateAddCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
+		match self.add_custom_output(amount_msat, cltv_expiry, logger)? {
+			Some(update_add_custom_output) => {
+				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
+				Ok(Some((update_add_custom_output, commitment_signed, monitor_update)))
+			},
+			None => Ok(None),
 		}
 	}
 
@@ -6151,7 +6371,9 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		self.holding_cell_update_fee.write(writer)?;
 
 		self.next_holder_htlc_id.write(writer)?;
+		self.next_holder_custom_output_id.write(writer)?;
 		(self.next_counterparty_htlc_id - dropped_inbound_htlcs).write(writer)?;
+		self.next_counterparty_custom_output_id.write(writer)?;
 		self.update_time_counter.write(writer)?;
 		self.feerate_per_kw.write(writer)?;
 
@@ -6354,6 +6576,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			});
 		}
 
+                // TODO(10101): Do the same as above for pending_outbound_htlcs
+                let pending_custom_outputs = Vec::new();
+
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
 		for _ in 0..holding_cell_htlc_update_count {
@@ -6376,6 +6601,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				_ => return Err(DecodeError::InvalidValue),
 			});
 		}
+
+                // TODO(10101): Do the same as above for holding_cell_custom_output_updates
+                let holding_cell_custom_output_updates = Vec::new();
 
 		let resend_order = match <u8 as Readable>::read(reader)? {
 			0 => RAACommitmentOrder::CommitmentFirst,
@@ -6404,7 +6632,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let holding_cell_update_fee = Readable::read(reader)?;
 
 		let next_holder_htlc_id = Readable::read(reader)?;
+		let next_holder_custom_output_id = Readable::read(reader)?;
 		let next_counterparty_htlc_id = Readable::read(reader)?;
+		let next_counterparty_custom_output_id = Readable::read(reader)?;
 		let update_time_counter = Readable::read(reader)?;
 		let feerate_per_kw = Readable::read(reader)?;
 
@@ -6419,7 +6649,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				let _: u64 = Readable::read(reader)?;
 				let _: Signature = Readable::read(reader)?;
 			},
-			_ => return Err(DecodeError::InvalidValue),
+			er => {
+				return Err(DecodeError::InvalidValue);
+			},
 		}
 
 		let funding_tx_confirmed_in = Readable::read(reader)?;
@@ -6590,8 +6822,10 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			value_to_self_msat,
 
 			pending_inbound_htlcs,
-			pending_outbound_htlcs,
-			holding_cell_htlc_updates,
+		        pending_outbound_htlcs,
+                        pending_custom_outputs,
+		        holding_cell_htlc_updates,
+                        holding_cell_custom_output_updates,
 
 			resend_order,
 
@@ -6605,7 +6839,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			pending_update_fee,
 			holding_cell_update_fee,
 			next_holder_htlc_id,
+                        next_holder_custom_output_id,
 			next_counterparty_htlc_id,
+			next_counterparty_custom_output_id,
 			update_time_counter,
 			feerate_per_kw,
 

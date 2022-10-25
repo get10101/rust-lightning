@@ -428,7 +428,7 @@ macro_rules! get_revoke_commit_msgs {
 				},
 				_ => panic!("Unexpected event"),
 			}, match events[1] {
-				MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 					assert_eq!(*node_id, $node_id);
 					assert!(updates.update_add_htlcs.is_empty());
 					assert!(updates.update_fulfill_htlcs.is_empty());
@@ -507,7 +507,7 @@ macro_rules! get_htlc_update_msgs {
 			let events = $node.node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			match events[0] {
-				$crate::util::events::MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+$crate::util::events::MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 					assert_eq!(*node_id, $node_id);
 					(*updates).clone()
 				},
@@ -1131,7 +1131,7 @@ impl SendEvent {
 
 	pub fn from_event(event: MessageSendEvent) -> SendEvent {
 		match event {
-			MessageSendEvent::UpdateHTLCs { node_id, updates } => SendEvent::from_commitment_update(node_id, updates),
+			MessageSendEvent::UpdateCommitmentOutputs { node_id, updates } => SendEvent::from_commitment_update(node_id, updates),
 			_ => panic!("Unexpected event type!"),
 		}
 	}
@@ -1217,7 +1217,7 @@ macro_rules! commitment_signed_dance {
 
 				let channel_state = $node_a.node.channel_state.lock().unwrap();
 				assert_eq!(channel_state.pending_msg_events.len(), 1);
-				if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = channel_state.pending_msg_events[0] {
+if let MessageSendEvent::UpdateCommitmentOutputs { ref node_id, .. } = channel_state.pending_msg_events[0] {
 					assert_ne!(*node_id, $node_b.node.get_our_node_id());
 				} else { panic!("Unexpected event"); }
 			} else {
@@ -1736,7 +1736,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	macro_rules! msgs_from_ev {
 		($ev: expr) => {
 			match $ev {
-				&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
 					assert!(update_add_htlcs.is_empty());
 					assert_eq!(update_fulfill_htlcs.len(), 1);
 					assert!(update_fail_htlcs.is_empty());
@@ -1912,7 +1912,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	assert_eq!(events.len(), expected_paths.len());
 	for ev in events.iter() {
 		let (update_fail, commitment_signed, node_id) = match ev {
-			&MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fulfill_htlcs.is_empty());
 				assert_eq!(update_fail_htlcs.len(), 1);
@@ -1946,7 +1946,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			if update_next_node {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert!(update_fulfill_htlcs.is_empty());
 						assert_eq!(update_fail_htlcs.len(), 1);
@@ -2336,7 +2336,7 @@ macro_rules! handle_chan_reestablish_msgs {
 						idx += 1;
 						RAACommitmentOrder::RevokeAndACKFirst
 					},
-					&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						commitment_update = Some(updates.clone());
 						idx += 1;
@@ -2356,7 +2356,7 @@ macro_rules! handle_chan_reestablish_msgs {
 						revoke_and_ack = Some(msg.clone());
 						idx += 1;
 					},
-					&MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 						assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 						assert!(commitment_update.is_none());
 						commitment_update = Some(updates.clone());

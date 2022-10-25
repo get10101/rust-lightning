@@ -199,6 +199,9 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -1369,6 +1372,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&their_node_id, &msg);
 			},
+			wire::Message::UpdateAddCustomOutput(msg) => {
+				self.message_handler.chan_handler.handle_update_add_custom_output(&their_node_id, &msg);
+			},
 			wire::Message::UpdateFulfillHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_fulfill_htlc(&their_node_id, &msg);
 			},
@@ -1642,15 +1648,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
-					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-						log_debug!(self.logger, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
+					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+						log_debug!(self.logger, "Handling UpdateCommitmentOutputs event in peer_handler for node {} with {} htlc adds, {} custom adds, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),
+								update_add_custom_output.len(),
 								update_fulfill_htlcs.len(),
 								update_fail_htlcs.len(),
 								log_bytes!(commitment_signed.channel_id));
 						let mut peer = get_peer_for_forwarding!(node_id);
 						for msg in update_add_htlcs {
+							self.enqueue_message(&mut *peer, msg);
+						}
+						for msg in update_add_custom_output {
 							self.enqueue_message(&mut *peer, msg);
 						}
 						for msg in update_fulfill_htlcs {

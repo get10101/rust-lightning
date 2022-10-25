@@ -18,12 +18,14 @@ use crate::prelude::*;
 use crate::io_extras::sink;
 use core::cmp::Ordering;
 
-pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
+pub fn sort_outputs<H, C, TH: Fn(&H, &H) -> Ordering, TC: Fn(&C, &C) -> Ordering>(outputs: &mut Vec<(TxOut, H, C)>, htlc_tie_breaker: TH, custom_output_tie_breaker: TC) {
 	outputs.sort_unstable_by(|a, b| {
 		a.0.value.cmp(&b.0.value).then_with(|| {
 			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
-				tie_breaker(&a.1, &b.1)
-			})
+				htlc_tie_breaker(&a.1, &b.1)
+			}).then_with(|| {
+                                custom_output_tie_breaker(&a.2, &b.2)
+                        })
 		})
 	});
 }
@@ -96,12 +98,12 @@ mod tests {
 		};
 		let txout2_ = txout2.clone();
 
-		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		let mut outputs = vec![(txout1, "ignore", ()), (txout2, "ignore", ())];
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); }, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
+			&vec![(txout2_, "ignore", ()), (txout1_, "ignore", ())]
 			);
 	}
 
@@ -119,12 +121,12 @@ mod tests {
 		};
 		let txout2_ = txout2.clone();
 
-		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		let mut outputs = vec![(txout1, "ignore", ()), (txout2, "ignore", ())];
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); }, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
+			&vec![(txout2_, "ignore", ()), (txout1_, "ignore", ())]
 			);
 	}
 
@@ -143,10 +145,10 @@ mod tests {
 		};
 		let txout2_ = txout2.clone();
 
-		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		let mut outputs = vec![(txout1, "ignore", ()), (txout2, "ignore", ())];
+		sort_outputs(&mut outputs, |_, _| { unreachable!(); }, |_, _| { unreachable!(); });
 
-		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
+		assert_eq!(&outputs, &vec![(txout1_, "ignore", ()), (txout2_, "ignore", ())]);
 	}
 
 	#[test]
@@ -160,12 +162,12 @@ mod tests {
 		let txout2 = txout1.clone();
 		let txout2_ = txout1.clone();
 
-		let mut outputs = vec![(txout1, 420), (txout2, 69)];
-		sort_outputs(&mut outputs, |a, b| { a.cmp(b) });
+		let mut outputs = vec![(txout1, 420, ()), (txout2, 69, ())];
+		sort_outputs(&mut outputs, |a, b| { a.cmp(b) }, |_, _| { unreachable!(); });
 
 		assert_eq!(
 			&outputs,
-			&vec![(txout2_, 69), (txout1_, 420)]
+			&vec![(txout2_, 69, ()), (txout1_, 420, ())]
 		);
 	}
 
@@ -179,18 +181,18 @@ mod tests {
 				#[test]
 				fn $name() {
 					let expected_raw: Vec<(u64, &str)> = $value;
-					let expected: Vec<(TxOut, &str)> = expected_raw.iter()
+					let expected: Vec<(TxOut, &str, ())> = expected_raw.iter()
 						.map(|txout_raw| TxOut {
 							value: txout_raw.0,
 							script_pubkey: script_from_hex(txout_raw.1)
-						}).map(|txout| (txout, "ignore"))
+						}).map(|txout| (txout, "ignore", ()))
 					.collect();
 
 					let mut outputs = expected.clone();
 					outputs.reverse(); // prep it
 
 					// actually do the work!
-					sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+					sort_outputs(&mut outputs, |_, _| { unreachable!(); }, |_, _| { unreachable!(); });
 
 					assert_eq!(outputs, expected);
 				}

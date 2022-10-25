@@ -306,6 +306,20 @@ pub struct UpdateAddHTLC {
 	pub(crate) onion_routing_packet: OnionPacket,
 }
 
+/// An update_add_custom_output message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateAddCustomOutput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The custom output ID
+	pub custom_output_id: u64,
+	/// The custom output value in milli-satoshi
+	pub amount_msat: u64, // TODO(10101): Support dual-funded output
+	/// The expiry height of the custom output
+	pub cltv_expiry: u32,
+	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
+}
+
  /// An onion message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OnionMessage {
@@ -356,6 +370,7 @@ pub struct CommitmentSigned {
 	pub signature: Signature,
 	/// Signatures on the HTLC transactions
 	pub htlc_signatures: Vec<Signature>,
+	// TODO(10101): Add dlc_signatures
 }
 
 /// A revoke_and_ack message to be sent or received from a peer
@@ -819,6 +834,9 @@ pub struct CommitmentUpdate {
 	pub update_fee: Option<UpdateFee>,
 	/// Finally, the commitment_signed message which should be sent
 	pub commitment_signed: CommitmentSigned,
+
+	/// TODO(10101): Add docs
+	pub update_add_custom_output: Vec<UpdateAddCustomOutput>,
 }
 
 /// Messages could have optional fields to use with extended features
@@ -860,6 +878,8 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// HTLC handling:
 	/// Handle an incoming update_add_htlc message from the given peer.
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
+	/// Handle an incoming update_add_custom_output message from the given peer.
+	fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateAddCustomOutput);
 	/// Handle an incoming update_fulfill_htlc message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC);
 	/// Handle an incoming update_fail_htlc message from the given peer.
@@ -1958,6 +1978,14 @@ impl_writeable_msg!(GossipTimestampFilter, {
 	timestamp_range,
 }, {});
 
+
+impl_writeable_msg!(UpdateAddCustomOutput, {
+	channel_id,
+	custom_output_id,
+	amount_msat,
+	cltv_expiry,
+}, {});
+
 #[cfg(test)]
 mod tests {
 	use hex;
@@ -2923,5 +2951,18 @@ mod tests {
 			});
 		}
 		Ok(encoded_payload)
+	}
+
+	#[test]
+	fn encoding_update_add_custom_output() {
+		let update_add_custom_output = msgs::UpdateAddCustomOutput {
+			channel_id: [2; 32],
+			amount_msat: 3608586615801332854,
+			cltv_expiry: 821716,
+			custom_output_id: 42
+		};
+		let encoded_value = update_add_custom_output.encode();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000000000002a3214466870114476000c89d4").unwrap();
+		assert_eq!(encoded_value, target_value);
 	}
 }

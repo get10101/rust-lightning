@@ -323,6 +323,9 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));
 	}
+	fn handle_update_add_custom_output(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		self.received_msg(wire::Message::UpdateAddCustomOutput(msg.clone()));
+	}
 	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		self.received_msg(wire::Message::UpdateFulfillHTLC(msg.clone()));
 	}
