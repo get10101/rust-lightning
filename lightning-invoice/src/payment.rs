@@ -259,6 +259,11 @@ pub trait Payer {
 		&self, route: &Route, payment_preimage: PaymentPreimage
 	) -> Result<PaymentId, PaymentSendFailure>;
 
+	/// Adds a custom output over the Lightning Network using the given [`Route`].
+	fn add_custom_output(
+		&self, route: &Route,
+	) -> Result<(), String>; // TODO(10101): Maybe add a `CustomOutputCreatedId`??
+
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;
 
@@ -320,6 +325,9 @@ pub enum PaymentError {
 	Routing(LightningError),
 	/// An error occurring when sending a payment.
 	Sending(PaymentSendFailure),
+	/// An error occurring when creating a custom output.
+	/// TODO(10101): Should remove this variant.
+	CreatingCustomOutput(String),
 }
 
 impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
@@ -431,6 +439,27 @@ where
 		};
 		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
+	}
+
+	/// TODO: Docs
+	/// TODO: Probably shouldn't be defined on the [`InvoicePayer`].
+	pub fn add_custom_output(
+		&self, pubkey: PublicKey, amount_msats: u64, final_cltv_expiry_delta: u32
+	) -> Result<(), PaymentError> {
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::for_keysend(pubkey),
+			final_value_msat: amount_msats,
+			final_cltv_expiry_delta,
+		};
+
+		let route = self.router.find_route(
+			&self.payer.node_id(), &route_params, &PaymentHash([0u8;32]), None,
+			self.create_inflight_map(),
+		).map_err(|e| PaymentError::Routing(e))?;
+
+		self.payer.add_custom_output(&route).map_err(PaymentError::CreatingCustomOutput)?;
+
+		Ok(())
 	}
 
 	fn pay_internal<F: FnOnce(&Route) -> Result<PaymentId, PaymentSendFailure> + Copy>(
@@ -2106,6 +2135,11 @@ mod tests {
 			self.check_attempts()
 		}
 
+		fn add_custom_output(
+			&self, route: &Route,
+		) -> Result<(), String> {
+			todo!()
+		}
 		fn send_spontaneous_payment(
 			&self, route: &Route, _payment_preimage: PaymentPreimage,
 		) -> Result<PaymentId, PaymentSendFailure> {
@@ -2121,6 +2155,7 @@ mod tests {
 		}
 
 		fn abandon_payment(&self, _payment_id: PaymentId) { }
+
 	}
 
 	// *** Full Featured Functional Tests with a Real ChannelManager ***

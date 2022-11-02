@@ -607,6 +607,12 @@ where
 		self.send_payment(route, payment_hash, payment_secret)
 	}
 
+	fn add_custom_output(
+		&self, route: &Route,
+	) -> Result<(), String> {
+		self.add_custom_output(route)
+	}
+
 	fn send_spontaneous_payment(
 		&self, route: &Route, payment_preimage: PaymentPreimage,
 	) -> Result<PaymentId, PaymentSendFailure> {
