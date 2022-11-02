@@ -261,9 +261,11 @@ enum HTLCUpdateAwaitingACK {
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
-struct AddCustomOutputAwaitingAck {
-    amount_msat: u64,
-    cltv_expiry: u32,
+enum CustomOutputUpdateAwaitingAck {
+	AddCustomOutput {
+		amount_msat: u64,
+		cltv_expiry: u32,
+	}
 }
 
 /// There are a few "states" and then a number of flags which can be applied:
@@ -572,7 +574,7 @@ pub(super) struct Channel<Signer: Sign> {
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
 	pending_custom_outputs: Vec<CustomOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
-	holding_cell_custom_output_updates: Vec<AddCustomOutputAwaitingAck>, // TODO(10101): Should we merge with previous field?
+	holding_cell_custom_output_updates: Vec<CustomOutputUpdateAwaitingAck>, // TODO(10101): Should we merge with previous field?
 
 	/// When resending CS/RAA messages on channel monitor restoration or on reconnect, we always
 	/// need to ensure we resend them in the order we originally generated them. Note that because
@@ -5810,7 +5812,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// There might be more checks to run. Look at `send_htlc` for inspiration.
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
-			self.holding_cell_custom_output_updates.push(AddCustomOutputAwaitingAck { amount_msat, cltv_expiry });
+			self.holding_cell_custom_output_updates.push(CustomOutputUpdateAwaitingAck::AddCustomOutput { amount_msat, cltv_expiry });
 			return Ok(None);
 		}
 
@@ -6318,6 +6320,36 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			}
 		}
 
+		(self.pending_custom_outputs.len() as u64).write(writer)?;
+		for custom_output in self.pending_custom_outputs.iter() {
+			custom_output.custom_output_id.write(writer)?;
+			custom_output.amount_msat.write(writer)?;
+			custom_output.cltv_expiry.write(writer)?;
+			match &custom_output.state {
+				CustomOutputState::LocalAnnounced => {
+					0u8.write(writer)?;
+				},
+				CustomOutputState::RemoteAnnounced => {
+					1u8.write(writer)?;
+				},
+				CustomOutputState::AwaitingRemoteRevoke => {
+					2u8.write(writer)?;
+				},
+				CustomOutputState::Committed => {
+					3u8.write(writer)?;
+				},
+				CustomOutputState::RemoteSettled => {
+					4u8.write(writer)?;
+				},
+				CustomOutputState::AwaitingRemoteRevokeToSettle => {
+					5u8.write(writer)?;
+				},
+				CustomOutputState::AwaitingRemovedRemoteRevoke => {
+					6u8.write(writer)?;
+				},
+			}
+		}
+
 		(self.holding_cell_htlc_updates.len() as u64).write(writer)?;
 		for update in self.holding_cell_htlc_updates.iter() {
 			match update {
@@ -6339,6 +6371,17 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 					htlc_id.write(writer)?;
 					err_packet.write(writer)?;
 				}
+			}
+		}
+
+		(self.holding_cell_custom_output_updates.len() as u64).write(writer)?;
+		for update in self.holding_cell_custom_output_updates.iter() {
+			match update {
+				CustomOutputUpdateAwaitingAck::AddCustomOutput { amount_msat, cltv_expiry } => {
+					0u8.write(writer)?;
+					amount_msat.write(writer)?;
+					cltv_expiry.write(writer)?;
+				},
 			}
 		}
 
@@ -6581,8 +6624,25 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			});
 		}
 
-		// TODO(10101): Do the same as above for pending_outbound_htlcs
-		let pending_custom_outputs = Vec::new();
+		let pending_custom_output_count: u64 = Readable::read(reader)?;
+		let mut pending_custom_outputs = Vec::with_capacity(pending_custom_output_count as usize);
+		for _ in 0..pending_custom_output_count {
+			pending_custom_outputs.push(CustomOutput {
+				custom_output_id: Readable::read(reader)?,
+				amount_msat: Readable::read(reader)?,
+				cltv_expiry: Readable::read(reader)?,
+				state: match <u8 as Readable>::read(reader)? {
+					0 => CustomOutputState::LocalAnnounced,
+					1 => CustomOutputState::RemoteAnnounced,
+					2 => CustomOutputState::AwaitingRemoteRevoke,
+					3 => CustomOutputState::Committed,
+					4 => CustomOutputState::RemoteSettled,
+					5 => CustomOutputState::AwaitingRemoteRevokeToSettle,
+					6 => CustomOutputState::AwaitingRemovedRemoteRevoke,
+					_ => return Err(DecodeError::InvalidValue),
+				},
+			});
+		}
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize * 2));
@@ -6607,8 +6667,18 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			});
 		}
 
-		// TODO(10101): Do the same as above for holding_cell_custom_output_updates
-		let holding_cell_custom_output_updates = Vec::new();
+		// TODO(10101): What else do we need to do with `holding_cell_custom_output_updates`?
+		let holding_cell_custom_output_count: u64 = Readable::read(reader)?;
+		let mut holding_cell_custom_output_updates = Vec::with_capacity(holding_cell_custom_output_count as usize);
+		for _ in 0..holding_cell_custom_output_count {
+			holding_cell_custom_output_updates.push(match <u8 as Readable>::read(reader)? {
+				0 => CustomOutputUpdateAwaitingAck::AddCustomOutput {
+					amount_msat: Readable::read(reader)?,
+					cltv_expiry: Readable::read(reader)?,
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			});
+		}
 
 		let resend_order = match <u8 as Readable>::read(reader)? {
 			0 => RAACommitmentOrder::CommitmentFirst,
@@ -6654,7 +6724,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				let _: u64 = Readable::read(reader)?;
 				let _: Signature = Readable::read(reader)?;
 			},
-			er => {
+			_ => {
 				return Err(DecodeError::InvalidValue);
 			},
 		}
