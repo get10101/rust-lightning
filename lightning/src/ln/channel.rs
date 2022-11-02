@@ -5800,14 +5800,11 @@ impl<Signer: Sign> Channel<Signer> {
 		// }
 		//
 		// There might be more checks to run. Look at `send_htlc` for inspiration.
-		dbg!("done");
 		// Now update local state:
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
-			dbg!("Broke out here");
 			self.holding_cell_custom_output_updates.push(AddCustomOutputAwaitingAck { amount_msat, cltv_expiry });
 			return Ok(None);
 		}
-		dbg!("continued");
 
 		self.pending_custom_outputs.push(CustomOutput { custom_output_id: self.next_holder_custom_output_id, amount_msat, cltv_expiry, state: CustomOutputState::LocalAnnounced });
 
