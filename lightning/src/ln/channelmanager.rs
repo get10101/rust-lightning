@@ -839,7 +839,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 
 	keys_manager: K,
 
-	pub logger: L,
+	logger: L,
 }
 
 /// Chain-related parameters used to construct a new `ChannelManager`.

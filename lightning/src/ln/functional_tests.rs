@@ -1074,19 +1074,6 @@ fn test_add_custom_output() {
 	// 11. let custom_output_created = node0.get_pending_events()
 	// 12. let custom_output_created = node1.get_pending_events()
 
-	{
-		let channels_by_id = &nodes[0].node.channel_state.lock().unwrap().by_id;
-		let channel = channels_by_id.get(&chan.2).unwrap();
-		let logger = test_utils::TestLogger::new();
-
-		let counterparty_keys = channel.build_remote_transaction_keys().unwrap();
-		let commitment_stats_after = channel.build_commitment_transaction(channel.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, &&logger);
-
-		dbg!(commitment_stats_after);
-	}
-
-
-	// TODO(10101): Enable lines below when the test passes
 	claim_payment(&nodes[1], &vec!(&nodes[0])[..], our_payment_preimage);
 
 	send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
