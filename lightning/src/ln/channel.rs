@@ -1477,9 +1477,18 @@ impl<Signer: Sign> Channel<Signer> {
 			if match update_state {
 				// Note that these match the inclusion criteria when scanning
 				// pending_inbound_htlcs below.
-				FeeUpdateState::RemoteAnnounced => { debug_assert!(!self.is_outbound()); !generated_by_local },
-				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => { debug_assert!(!self.is_outbound()); !generated_by_local },
-				FeeUpdateState::Outbound => { assert!(self.is_outbound());  generated_by_local },
+				FeeUpdateState::RemoteAnnounced => {
+					debug_assert!(!self.is_outbound());
+					!generated_by_local
+				},
+				FeeUpdateState::AwaitingRemoteRevokeToAnnounce => {
+					debug_assert!(!self.is_outbound());
+					!generated_by_local
+				},
+				FeeUpdateState::Outbound => {
+					assert!(self.is_outbound());
+					generated_by_local
+				},
 			} {
 				feerate_per_kw = feerate;
 			}
@@ -1591,7 +1600,7 @@ impl<Signer: Sign> Channel<Signer> {
 			} else {
 				log_trace!(logger, "   ...not including outbound HTLC {} (hash {}) with value {} due to state ({})", htlc.htlc_id, log_bytes!(htlc.payment_hash.0), htlc.amount_msat, state_name);
 				match htlc.state {
-					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_))|OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
+					OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) => {
 						value_to_self_msat_offset -= htlc.amount_msat as i64;
 					},
 					OutboundHTLCState::RemoteRemoved(OutboundHTLCOutcome::Success(_)) => {
@@ -1604,7 +1613,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-                for ref custom_output in self.pending_custom_outputs.iter() {
+		for ref custom_output in self.pending_custom_outputs.iter() {
 			let state_name = match custom_output.state {
 				CustomOutputState::LocalAnnounced => "LocalAnnounced",
 				CustomOutputState::RemoteAnnounced => "RemoteAnnounced",
@@ -1616,7 +1625,7 @@ impl<Signer: Sign> Channel<Signer> {
 			};
 
 			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
-			
+
 			// Ignoring inbound or outbound
 			// Ignoring `self.opt_anchors()` for now?
 
@@ -1626,7 +1635,7 @@ impl<Signer: Sign> Channel<Signer> {
 				transaction_output_index: None,
 			};
 			// let custom_output_tx_fee = feerate_per_kw as u64 * custom_output_tx_weight / 1000;
-			
+
 			// assume custom output is > dust limit + associated tx fee, therefore always include
 			log_trace!(
 				logger,
@@ -1635,7 +1644,7 @@ impl<Signer: Sign> Channel<Signer> {
 				custom_output.custom_output_id,
 				custom_output.amount_msat
 			);
-			
+
 			included_custom_outputs.push(custom_output_in_tx);
 		}
 
@@ -1694,20 +1703,19 @@ impl<Signer: Sign> Channel<Signer> {
 		let num_nondust_htlcs = included_non_dust_htlcs.len();
 
 		let channel_parameters =
-			if local { self.channel_transaction_parameters.as_holder_broadcastable() }
-			else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
+			if local { self.channel_transaction_parameters.as_holder_broadcastable() } else { self.channel_transaction_parameters.as_counterparty_broadcastable() };
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			commitment_number,
-		        value_to_a as u64,
-		        value_to_b as u64,
-		        self.channel_transaction_parameters.opt_anchors.is_some(),
-		        funding_pubkey_a,
-		        funding_pubkey_b,
-		        keys.clone(),
-		        feerate_per_kw,
-		        &mut included_non_dust_htlcs,
+			value_to_a as u64,
+			value_to_b as u64,
+			self.channel_transaction_parameters.opt_anchors.is_some(),
+			funding_pubkey_a,
+			funding_pubkey_b,
+			keys.clone(),
+			feerate_per_kw,
+			&mut included_non_dust_htlcs,
 			&mut included_custom_outputs,
-		        &channel_parameters
+			&channel_parameters,
 		);
 		let mut htlcs_included = included_non_dust_htlcs;
 		// The unwrap is safe, because all non-dust HTLCs have been assigned an output index
@@ -1726,7 +1734,7 @@ impl<Signer: Sign> Channel<Signer> {
 			htlcs_included,
 			local_balance_msat: value_to_self_msat as u64,
 			remote_balance_msat: value_to_remote_msat as u64,
-			preimages
+			preimages,
 		}
 	}
 
@@ -6573,11 +6581,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			});
 		}
 
-                // TODO(10101): Do the same as above for pending_outbound_htlcs
-                let pending_custom_outputs = Vec::new();
+		// TODO(10101): Do the same as above for pending_outbound_htlcs
+		let pending_custom_outputs = Vec::new();
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
-		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize*2));
+		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize * 2));
 		for _ in 0..holding_cell_htlc_update_count {
 			holding_cell_htlc_updates.push(match <u8 as Readable>::read(reader)? {
 				0 => HTLCUpdateAwaitingACK::AddHTLC {
@@ -6599,8 +6607,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			});
 		}
 
-                // TODO(10101): Do the same as above for holding_cell_custom_output_updates
-                let holding_cell_custom_output_updates = Vec::new();
+		// TODO(10101): Do the same as above for holding_cell_custom_output_updates
+		let holding_cell_custom_output_updates = Vec::new();
 
 		let resend_order = match <u8 as Readable>::read(reader)? {
 			0 => RAACommitmentOrder::CommitmentFirst,
@@ -6703,7 +6711,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		let channel_update_status = Readable::read(reader)?;
 
 		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = HashSet::new();
+			let mut historical_inbound_htlc_fulfills = HashSet::new();
 		#[cfg(any(test, fuzzing))]
 		{
 			let htlc_fulfills_len: u64 = Readable::read(reader)?;
@@ -6819,10 +6827,10 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			value_to_self_msat,
 
 			pending_inbound_htlcs,
-		        pending_outbound_htlcs,
-                        pending_custom_outputs,
-		        holding_cell_htlc_updates,
-                        holding_cell_custom_output_updates,
+			pending_outbound_htlcs,
+			pending_custom_outputs,
+			holding_cell_htlc_updates,
+			holding_cell_custom_output_updates,
 
 			resend_order,
 
@@ -6836,7 +6844,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 			pending_update_fee,
 			holding_cell_update_fee,
 			next_holder_htlc_id,
-                        next_holder_custom_output_id,
+			next_holder_custom_output_id,
 			next_counterparty_htlc_id,
 			next_counterparty_custom_output_id,
 			update_time_counter,
