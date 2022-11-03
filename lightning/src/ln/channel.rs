@@ -2578,6 +2578,13 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		balance_msat -= outbound_stats.pending_htlcs_value_msat;
 
+		for ref customoutput in self.pending_custom_outputs.iter() {
+			// TODO (10101): we need to know which amount is from us and which from the other party. For now we believe the amount is always coming from the sender who is in `LocalAnnounced`.
+			if let CustomOutputState::LocalAnnounced = customoutput.state {
+				balance_msat -= customoutput.amount_msat;
+			}
+		}
+
 		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
 				- outbound_stats.pending_htlcs_value_msat as i64
 				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
