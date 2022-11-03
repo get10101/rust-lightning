@@ -3640,8 +3640,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_htlcs: Vec::new(),
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: Some(update_fee),
-							        commitment_signed,
-                                                                update_add_custom_output: Vec::new(),
+								commitment_signed,
+								update_add_custom_output: Vec::new(),
 							},
 						});
 						Ok(())
@@ -4263,8 +4263,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									update_fail_htlcs: Vec::new(),
 									update_fail_malformed_htlcs: Vec::new(),
 									update_fee: None,
-								        commitment_signed,
-                                                                        update_add_custom_output: Vec::new(),
+									commitment_signed,
+									update_add_custom_output: Vec::new(),
 								}
 							});
 						}

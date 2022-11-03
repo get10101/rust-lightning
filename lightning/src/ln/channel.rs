@@ -3398,8 +3398,8 @@ impl<Signer: Sign> Channel<Signer> {
 				update_fail_htlcs,
 				update_fail_malformed_htlcs: Vec::new(),
 				update_fee,
-			        commitment_signed,
-                                update_add_custom_output: Vec::new(),
+				commitment_signed,
+				update_add_custom_output: Vec::new(),
 			}, monitor_update)), htlcs_to_fail))
 		} else {
 			Ok((None, Vec::new()))
@@ -3659,8 +3659,8 @@ impl<Signer: Sign> Channel<Signer> {
 							update_fail_htlcs,
 							update_fail_malformed_htlcs,
 							update_fee: None,
-						        commitment_signed,
-                                                        update_add_custom_output: Vec::new()
+							commitment_signed,
+							update_add_custom_output: Vec::new()
 						}),
 						finalized_claimed_htlcs,
 						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
@@ -4022,8 +4022,8 @@ impl<Signer: Sign> Channel<Signer> {
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		msgs::CommitmentUpdate {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
-		        commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
-                        update_add_custom_output: Vec::new(),
+			commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
+			update_add_custom_output: Vec::new(),
 		}
 	}
 
