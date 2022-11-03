@@ -138,7 +138,6 @@ use crate::Invoice;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
-use lightning::ln::features::NodeFeatures;
 
 use crate::prelude::*;
 use lightning::io;
@@ -447,29 +446,22 @@ where
 	pub fn add_custom_output(
 		&self, pubkey: PublicKey, amount_msats: u64, final_cltv_expiry_delta: u32
 	) -> Result<(), PaymentError> {
+		let payment_params = PaymentParameters::from_node_id(pubkey); // The node ID of the receiver OK
 		let route_params = RouteParameters {
-			payment_params: PaymentParameters::for_keysend(pubkey),
+			payment_params,
 			final_value_msat: amount_msats,
 			final_cltv_expiry_delta,
 		};
 
-		// let route = self.router.find_route(
-		//	&self.payer.node_id(), &route_params, &PaymentHash([0u8;32]), None,
-		//	self.create_inflight_map(),
-		// ).map_err(|e| PaymentError::Routing(e))?;
+		let first_hops = self.payer.first_hops();
+		let route = self.router.find_route(
+			&self.payer.node_id(), // The node ID of the sender OK
+			&route_params, // TBD
+			&PaymentHash([0u8;32]), // Ignored OK
+			Some(&first_hops.iter().collect::<Vec<_>>()),
+			self.create_inflight_map(),
+		).map_err(|e| PaymentError::Routing(e))?;
 
-		let route_hop =
-			RouteHop {
-				pubkey,
-				node_features: NodeFeatures::empty(),
-				short_channel_id: todo!(),
-				channel_features: todo!(),
-				fee_msat: todo!(),
-				cltv_expiry_delta: todo!()
-			};
-
-		let route = Route {
-			paths: vec![vec![route_hop]], payment_params: None };
 
 		self.payer.add_custom_output(&route).map_err(PaymentError::CreatingCustomOutput)?;
 
