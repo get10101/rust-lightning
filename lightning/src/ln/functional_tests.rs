@@ -711,7 +711,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let local_chan = local_chan_lock.by_id.get(&chan.2).unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
-                let mut custom_outputs: Vec<CustomOutputInCommitment> = vec![];
+		let mut custom_outputs: Vec<CustomOutputInCommitment> = vec![];
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
 			INITIAL_COMMITMENT_NUMBER - 1,
 			push_sats,
@@ -720,7 +720,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 			commit_tx_keys.clone(),
 			non_buffer_feerate + 4,
 			&mut htlcs,
-                        &mut custom_outputs,
+			&mut custom_outputs,
 			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
@@ -767,7 +767,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	nodes[0].node.timer_tick_occurred();
 	check_added_monitors!(nodes[0], 1);
 
-        // node0 what to send to node1
+	// node0 what to send to node1
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
@@ -777,12 +777,12 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_msg.unwrap());
-        // node0 send commit and HTLC signatures to node1
+	// node0 send commit and HTLC signatures to node1
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), commitment_signed);
 	let (revoke_msg, commitment_signed) = get_revoke_commit_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 1);
 
-        nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg);
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke_msg);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 
@@ -793,7 +793,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke_msg);
 	check_added_monitors!(nodes[1], 1);
 	// AwaitingRemoteRevoke ends here
-        // is channel rebalancing done?
+	// is channel rebalancing done?
 
 	let (route, our_payment_hash, our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 800000);
 
@@ -808,7 +808,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	// assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	// node[1] has nothing to do
 
-	
+
 
 	let commitment_update = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(commitment_update.update_add_htlcs.len(), 1);
@@ -824,7 +824,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke);
 	check_added_monitors!(nodes[1], 2);
-        assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
 	check_added_monitors!(nodes[1], 1);
@@ -920,10 +920,10 @@ fn test_add_custom_output() {
 		.node
 		.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &commitment_signed);
 	let revoke_msg = get_event_msg!(
-                nodes[0],
-                MessageSendEvent::SendRevokeAndACK,
-                nodes[1].node.get_our_node_id()
-        );
+		nodes[0],
+		MessageSendEvent::SendRevokeAndACK,
+		nodes[1].node.get_our_node_id()
+	);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[0], 1);
 	nodes[1]
@@ -977,10 +977,10 @@ fn test_add_custom_output() {
 		.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
 	check_added_monitors!(nodes[1], 1);
 	let revoke = get_event_msg!(
-                nodes[1],
-                MessageSendEvent::SendRevokeAndACK,
-                nodes[0].node.get_our_node_id()
-        );
+		nodes[1],
+		MessageSendEvent::SendRevokeAndACK,
+		nodes[0].node.get_our_node_id()
+	);
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 
 	nodes[0]
@@ -1004,18 +1004,35 @@ fn test_add_custom_output() {
 	dbg!("Hello");
 
 	// 1. node1 calls get_route()
+
+	let amount_node1_msat = 1_000_567;
+	let amount_node0_msat = 234_000;
+
+	// TODO: This information should be acquired differently i.e using the new APIs in `lightning-invoice`
 	let route_to_node0 = get_route!(
-                nodes[1],
-                // Should we be reusing `PaymentParameters`? We only want to support trivial routing at
-                // this stage
-                PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()),
-                1_234_567,
-                TEST_FINAL_CLTV
-        )
+		nodes[1],
+		// Should we be reusing `PaymentParameters`? We only want to support trivial routing at
+		// this stage
+		PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()),
+		amount_node1_msat + amount_node0_msat,
+		TEST_FINAL_CLTV
+	)
 		.unwrap();
 
+	let RouteHop {
+		pubkey: pk_counterparty,
+		short_channel_id,
+		cltv_expiry_delta: cltv_expiry,
+		..
+	} = route_to_node0.paths
+		.first()
+		.unwrap()
+		.first()
+		.unwrap()
+		.clone();
+
 	// 2. node1.add_custom_output() (similar to send_payment()?)
-	nodes[1].node.add_custom_output(&route_to_node0).unwrap();
+	nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry).unwrap();
 	dbg!("Node1 added custom output");
 	check_added_monitors!(nodes[1], 1);
 
@@ -1676,7 +1693,7 @@ fn test_fee_spike_violation_fails_htlc() {
 			commit_tx_keys.clone(),
 			feerate_per_kw,
 			&mut vec![(accepted_htlc_info, ())],
-                        &mut vec![],
+			&mut vec![],
 			&local_chan.channel_transaction_parameters.as_counterparty_broadcastable()
 		);
 		local_chan_signer.sign_counterparty_commitment(&commitment_tx, Vec::new(), &secp_ctx).unwrap()
@@ -3111,9 +3128,9 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	// timeout the HTLC backward accordingly. So here we test that ChannelManager is
 	// broadcasting the right event to other nodes in payment path.
 	// A ------------------> B ----------------------> C (timeout)
-	//    B's commitment tx 		C's commitment tx
-	//    	      \                                  \
-	//    	   B's HTLC timeout tx		     B's timeout tx
+	//    B's commitment tx			C's commitment tx
+	//	      \                                  \
+	//	   B's HTLC timeout tx		     B's timeout tx
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -6051,7 +6068,7 @@ fn test_dynamic_spendable_outputs_local_htlc_timeout_tx() {
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn[0], htlc_timeout);
 	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+		spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -6134,7 +6151,7 @@ fn test_key_derivation_params() {
 	assert_eq!(spend_txn[2].input.len(), 2);
 	check_spends!(spend_txn[2], local_txn_1[0], htlc_timeout);
 	assert!(spend_txn[2].input[0].sequence.0 == BREAKDOWN_TIMEOUT as u32 ||
-	        spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
+		spend_txn[2].input[1].sequence.0 == BREAKDOWN_TIMEOUT as u32);
 }
 
 #[test]
@@ -10634,7 +10651,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
 				if let Err(_) = nodes[0].node.send_payment(&route, payment_hash, &Some(payment_secret)) { panic!("Unexpected event at dust HTLC {}", i); }
 			}
-	        } else {
+		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Inbound dust balance: 5000 sats
 			for _ in 0..dust_htlc_on_counterparty_tx {

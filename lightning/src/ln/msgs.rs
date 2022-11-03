@@ -67,7 +67,7 @@ pub enum DecodeError {
 	BadLengthDescriptor,
 	/// Error from std::io
 	Io(/// (C-not exported) as ErrorKind doesn't have a reasonable mapping
-        io::ErrorKind),
+	io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
 }
@@ -313,8 +313,10 @@ pub struct UpdateAddCustomOutput {
 	pub channel_id: [u8; 32],
 	/// The custom output ID
 	pub custom_output_id: u64,
-	/// The custom output value in milli-satoshi
-	pub amount_msat: u64, // TODO(10101): Support dual-funded output
+	/// The custom output value provided by the dialer, in milli-satoshi.
+	pub amount_dialer_msat: u64,
+	/// The custom output value provided by the listener, in milli-satoshi.
+	pub amount_listener_msat: u64,
 	/// The expiry height of the custom output
 	pub cltv_expiry: u32,
 	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
@@ -1982,7 +1984,8 @@ impl_writeable_msg!(GossipTimestampFilter, {
 impl_writeable_msg!(UpdateAddCustomOutput, {
 	channel_id,
 	custom_output_id,
-	amount_msat,
+	amount_dialer_msat,
+	amount_listener_msat,
 	cltv_expiry,
 }, {});
 
@@ -2957,12 +2960,14 @@ mod tests {
 	fn encoding_update_add_custom_output() {
 		let update_add_custom_output = msgs::UpdateAddCustomOutput {
 			channel_id: [2; 32],
-			amount_msat: 3608586615801332854,
+			amount_dialer_msat: 3608586615801332854,
+			amount_listener_msat: 3608586615801332854,
 			cltv_expiry: 821716,
 			custom_output_id: 42
 		};
 		let encoded_value = update_add_custom_output.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000000000002a3214466870114476000c89d4").unwrap();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000000000002a32144668701144763214466870114476000c89d4").unwrap();
+
 		assert_eq!(encoded_value, target_value);
 	}
 }
