@@ -138,6 +138,7 @@ use crate::Invoice;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use lightning::ln::features::NodeFeatures;
 
 use crate::prelude::*;
 use lightning::io;
@@ -452,10 +453,23 @@ where
 			final_cltv_expiry_delta,
 		};
 
-		let route = self.router.find_route(
-			&self.payer.node_id(), &route_params, &PaymentHash([0u8;32]), None,
-			self.create_inflight_map(),
-		).map_err(|e| PaymentError::Routing(e))?;
+		// let route = self.router.find_route(
+		//	&self.payer.node_id(), &route_params, &PaymentHash([0u8;32]), None,
+		//	self.create_inflight_map(),
+		// ).map_err(|e| PaymentError::Routing(e))?;
+
+		let route_hop =
+			RouteHop {
+				pubkey,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: todo!(),
+				channel_features: todo!(),
+				fee_msat: todo!(),
+				cltv_expiry_delta: todo!()
+			};
+
+		let route = Route {
+			paths: vec![vec![route_hop]], payment_params: None };
 
 		self.payer.add_custom_output(&route).map_err(PaymentError::CreatingCustomOutput)?;
 
