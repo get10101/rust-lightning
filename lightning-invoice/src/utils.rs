@@ -14,9 +14,9 @@ use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, P
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
-use lightning::ln::msgs::LightningError;
+use lightning::ln::msgs::{LightningError, ErrorAction};
 use lightning::routing::gossip::{NetworkGraph, NodeId, RoutingFees};
-use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop};
+use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop, AddCustomOutputRouteDetails};
 use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
@@ -583,6 +583,43 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 		self.scorer.lock().probe_failed(path, short_channel_id);
 	}
+
+	fn add_custom_output_route_details(
+		&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+	) -> Result<AddCustomOutputRouteDetails, LightningError> {
+		let ChannelDetails { outbound_capacity_msat, inbound_capacity_msat, short_channel_id, counterparty, .. } = channel_details;
+
+		let short_channel_id = short_channel_id.ok_or_else(|| LightningError {
+			err: format!("Cannot create custom output if funding transaction has not been confirmed yet"),
+			action: ErrorAction::IgnoreError
+		})?;
+
+		if dialer_amount_msats > outbound_capacity_msat {
+			return Err(LightningError {
+				err: format!(
+					"Cannot create custom output with insufficient outbound liquidity.
+					 Needed: {dialer_amount_msats};
+					 available: {outbound_capacity_msat}"
+				),
+				action: ErrorAction::IgnoreError
+			});
+		}
+
+		if listener_amount_msats > inbound_capacity_msat {
+			return Err(LightningError {
+				err: format!(
+					"Cannot create custom output with insufficient inbound liquidity.
+					 Needed: {listener_amount_msats};
+					 available: {inbound_capacity_msat}"
+				),
+				action: ErrorAction::IgnoreError
+			});
+		}
+
+
+		Ok(AddCustomOutputRouteDetails {
+			short_channel_id, pk_counterparty: counterparty.node_id, amount_us_msat: dialer_amount_msats, amount_counterparty_msat: listener_amount_msats, cltv_expiry })
+	}
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
@@ -608,9 +645,11 @@ where
 	}
 
 	fn add_custom_output(
-		&self, route: &Route,
+		&self, route_details: AddCustomOutputRouteDetails,
 	) -> Result<(), String> {
-		self.add_custom_output(route)
+		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
+
+		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry)
 	}
 
 	fn send_spontaneous_payment(

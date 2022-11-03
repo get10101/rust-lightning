@@ -701,9 +701,9 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //
 pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	default_configuration: UserConfig,
@@ -1594,10 +1594,10 @@ macro_rules! post_handle_chan_restoration {
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -2537,7 +2537,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: None,
 								commitment_signed,
-                                update_add_custom_output: Vec::new(),
+				update_add_custom_output: Vec::new(),
 							},
 						});
 					},
@@ -2677,18 +2677,19 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
-    /// TODO(10101): Add docs
-    pub fn add_custom_output(&self, route: &Route) -> Result<(), String> {
-		if route.paths.len() != 1 {
-			return Err("Only single path routing supported".to_owned());
-		}
-
-		let route_hop = &route.paths.first().unwrap()[0];
-
+	/// TODO(10101): Add docs
+	pub fn add_custom_output(
+		&self,
+		short_channel_id: u64,
+		pk_counterparty: PublicKey,
+		amount_us_msat: u64,
+		amount_counterparty_msat: u64,
+		cltv_expiry: u32
+	) -> Result<(), String>	{
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_id = channel_lock
 			.short_to_chan_info
-			.get(&route_hop.short_channel_id)
+			.get(&short_channel_id)
 			.map(|(_, id)| id)
 			.cloned()
 			.ok_or("No channel available with first hop!".to_owned())?;
@@ -2706,7 +2707,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 
 
-		if channel.get().get_counterparty_node_id() != route_hop.pubkey {
+		if channel.get().get_counterparty_node_id() != pk_counterparty {
 			return Err("Node ID mismatch".to_owned());
 		}
 
@@ -2715,31 +2716,37 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 
 		let (update_add, commitment_signed, monitor_update) =
-			match channel.get_mut().add_custom_output_and_commit(route_hop.fee_msat, route_hop.cltv_expiry_delta, &self.logger) {
-				Ok(Some(res)) => res,
-				Ok(None) => {
-					// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
-					// should be used like when adding HTLCs: if the channel reports that it is "in
-					// the middle of something" and it should not be modified, we do nothing. The
-					// work should be queued up in `holding_cell_custom_output_updates`, so it can
-					// be picked up later (yet to be implemented. Consider how
-					// `holding_cell_htlc_updates` is used)
+			match channel.get_mut().add_custom_output_and_commit(
+				amount_us_msat,
+				amount_counterparty_msat,
+				cltv_expiry,
+				&self.logger
+			)
+		{
+			Ok(Some(res)) => res,
+			Ok(None) => {
+				// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
+				// should be used like when adding HTLCs: if the channel reports that it is "in
+				// the middle of something" and it should not be modified, we do nothing. The
+				// work should be queued up in `holding_cell_custom_output_updates`, so it can
+				// be picked up later (yet to be implemented. Consider how
+				// `holding_cell_htlc_updates` is used)
 
-					return Ok(());
+				return Ok(());
+			}
+			Err(e) => {
+				let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
+				if drop {
+					channel.remove_entry();
 				}
-				Err(e) => {
-					let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
-					if drop {
-						channel.remove_entry();
-					}
-					match handle_error!(self, Result::<(), _>::Err(e), route_hop.pubkey) {
-						Ok(_) => unreachable!(),
-						Err(e) => {
-							return Err(format!("Channel unavailable: {}", e.err));
-						},
-					}
-				},
-			};
+				match handle_error!(self, Result::<(), _>::Err(e), pk_counterparty) {
+					Ok(_) => unreachable!(),
+					Err(e) => {
+						return Err(format!("Channel unavailable: {}", e.err));
+					},
+				}
+			},
+		};
 
 		let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
 		let channel_id = channel.get().channel_id();
@@ -2771,7 +2778,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		log_debug!(self.logger, "Adding custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
 
 		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
-			node_id: route_hop.pubkey,
+			node_id: pk_counterparty,
 			updates: msgs::CommitmentUpdate {
 				update_add_htlcs: Vec::new(),
 				update_fulfill_htlcs: Vec::new(),
@@ -2784,7 +2791,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		});
 
 		Ok(())
-    }
+	}
 
 	/// Retries a payment along the given [`Route`].
 	///
@@ -5071,11 +5078,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                                prev_htlc_id, forward_info });
+													prev_htlc_id, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
 							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                             prev_htlc_id, forward_info }));
+												     prev_htlc_id, forward_info }));
 						}
 					}
 				}
@@ -5702,9 +5709,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -6086,10 +6093,10 @@ where
 impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -6729,10 +6736,10 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
@@ -6907,10 +6914,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
@@ -6979,10 +6986,10 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
@@ -6993,10 +7000,10 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);

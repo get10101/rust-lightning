@@ -68,7 +68,7 @@ pub fn htlc_timeout_tx_weight(opt_anchors: bool) -> u64 {
 /// Gets the weight for a custom output transaction.
 #[inline]
 pub fn custom_output_tx_weight() -> u64 {
-        // TODO(10101): Come up with the real number
+	// TODO(10101): Come up with the real number
 	600
 }
 
@@ -520,15 +520,15 @@ pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 3 + 34*2;
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
 pub fn get_revokeable_redeemscript(revocation_key: &PublicKey, contest_delay: u16, broadcaster_delayed_payment_key: &PublicKey) -> Script {
 	let res = Builder::new().push_opcode(opcodes::all::OP_IF)
-	              .push_slice(&revocation_key.serialize())
-	              .push_opcode(opcodes::all::OP_ELSE)
-	              .push_int(contest_delay as i64)
-	              .push_opcode(opcodes::all::OP_CSV)
-	              .push_opcode(opcodes::all::OP_DROP)
-	              .push_slice(&broadcaster_delayed_payment_key.serialize())
-	              .push_opcode(opcodes::all::OP_ENDIF)
-	              .push_opcode(opcodes::all::OP_CHECKSIG)
-	              .into_script();
+		      .push_slice(&revocation_key.serialize())
+		      .push_opcode(opcodes::all::OP_ELSE)
+		      .push_int(contest_delay as i64)
+		      .push_opcode(opcodes::all::OP_CSV)
+		      .push_opcode(opcodes::all::OP_DROP)
+		      .push_slice(&broadcaster_delayed_payment_key.serialize())
+		      .push_opcode(opcodes::all::OP_ENDIF)
+		      .push_opcode(opcodes::all::OP_CHECKSIG)
+		      .into_script();
 	debug_assert!(res.len() <= REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH);
 	res
 }
@@ -565,22 +565,24 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 /// Information about a custom output as it appears in a commitment transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomOutputInCommitment {
-	/// The value, in msat, of the custom output. The value as it appears in the commitment transaction is
-	/// this divided by 1000.
-	pub amount_msat: u64,
+	/// The value, in msat, of the custom output provided by the protocol dialer.
+	pub amount_dialer_msat: u64,
+	/// The value, in msat, of the custom output provided by the protocol listener.
+	pub amount_listener_msat: u64,
 	/// The CLTV lock-time at which this custom output expires.
 	pub cltv_expiry: u32,
 	/// The position within the commitment transactions' outputs.
-        ///
-        /// This is set to [`None`] until all the outputs of the commitment transaction are ordered.
-        /// (I hate this, but we are just following the existing patterns of this library).
+	///
+	/// This is set to [`None`] until all the outputs of the commitment transaction are ordered.
+	/// (I hate this, but we are just following the existing patterns of this library).
 	pub transaction_output_index: Option<u32>,
 }
 
 impl_writeable_tlv_based!(CustomOutputInCommitment, {
-	(0, amount_msat, required),
-	(2, cltv_expiry, required),
-	(4, transaction_output_index, option),
+	(0, amount_dialer_msat, required),
+	(2, amount_listener_msat, required),
+	(4, cltv_expiry, required),
+	(6, transaction_output_index, option),
 });
 
 #[inline]
@@ -588,30 +590,30 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 	let payment_hash160 = Ripemd160::hash(&htlc.payment_hash.0[..]).into_inner();
 	if htlc.offered {
 		let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.serialize()[..])
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_opcode(opcodes::all::OP_SIZE)
-		              .push_int(32)
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_NOTIF)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.serialize()[..])
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&payment_hash160)
-		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF);
+			      .push_opcode(opcodes::all::OP_HASH160)
+			      .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
+			      .push_opcode(opcodes::all::OP_EQUAL)
+			      .push_opcode(opcodes::all::OP_IF)
+			      .push_opcode(opcodes::all::OP_CHECKSIG)
+			      .push_opcode(opcodes::all::OP_ELSE)
+			      .push_slice(&countersignatory_htlc_key.serialize()[..])
+			      .push_opcode(opcodes::all::OP_SWAP)
+			      .push_opcode(opcodes::all::OP_SIZE)
+			      .push_int(32)
+			      .push_opcode(opcodes::all::OP_EQUAL)
+			      .push_opcode(opcodes::all::OP_NOTIF)
+			      .push_opcode(opcodes::all::OP_DROP)
+			      .push_int(2)
+			      .push_opcode(opcodes::all::OP_SWAP)
+			      .push_slice(&broadcaster_htlc_key.serialize()[..])
+			      .push_int(2)
+			      .push_opcode(opcodes::all::OP_CHECKMULTISIG)
+			      .push_opcode(opcodes::all::OP_ELSE)
+			      .push_opcode(opcodes::all::OP_HASH160)
+			      .push_slice(&payment_hash160)
+			      .push_opcode(opcodes::all::OP_EQUALVERIFY)
+			      .push_opcode(opcodes::all::OP_CHECKSIG)
+			      .push_opcode(opcodes::all::OP_ENDIF);
 		if opt_anchors {
 			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
@@ -621,33 +623,33 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 			.into_script()
 	} else {
 			let mut bldr = Builder::new().push_opcode(opcodes::all::OP_DUP)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_slice(&countersignatory_htlc_key.serialize()[..])
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_opcode(opcodes::all::OP_SIZE)
-		              .push_int(32)
-		              .push_opcode(opcodes::all::OP_EQUAL)
-		              .push_opcode(opcodes::all::OP_IF)
-		              .push_opcode(opcodes::all::OP_HASH160)
-		              .push_slice(&payment_hash160)
-		              .push_opcode(opcodes::all::OP_EQUALVERIFY)
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_SWAP)
-		              .push_slice(&broadcaster_htlc_key.serialize()[..])
-		              .push_int(2)
-		              .push_opcode(opcodes::all::OP_CHECKMULTISIG)
-		              .push_opcode(opcodes::all::OP_ELSE)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_int(htlc.cltv_expiry as i64)
-		              .push_opcode(opcodes::all::OP_CLTV)
-		              .push_opcode(opcodes::all::OP_DROP)
-		              .push_opcode(opcodes::all::OP_CHECKSIG)
-		              .push_opcode(opcodes::all::OP_ENDIF);
+			      .push_opcode(opcodes::all::OP_HASH160)
+			      .push_slice(&PubkeyHash::hash(&revocation_key.serialize())[..])
+			      .push_opcode(opcodes::all::OP_EQUAL)
+			      .push_opcode(opcodes::all::OP_IF)
+			      .push_opcode(opcodes::all::OP_CHECKSIG)
+			      .push_opcode(opcodes::all::OP_ELSE)
+			      .push_slice(&countersignatory_htlc_key.serialize()[..])
+			      .push_opcode(opcodes::all::OP_SWAP)
+			      .push_opcode(opcodes::all::OP_SIZE)
+			      .push_int(32)
+			      .push_opcode(opcodes::all::OP_EQUAL)
+			      .push_opcode(opcodes::all::OP_IF)
+			      .push_opcode(opcodes::all::OP_HASH160)
+			      .push_slice(&payment_hash160)
+			      .push_opcode(opcodes::all::OP_EQUALVERIFY)
+			      .push_int(2)
+			      .push_opcode(opcodes::all::OP_SWAP)
+			      .push_slice(&broadcaster_htlc_key.serialize()[..])
+			      .push_int(2)
+			      .push_opcode(opcodes::all::OP_CHECKMULTISIG)
+			      .push_opcode(opcodes::all::OP_ELSE)
+			      .push_opcode(opcodes::all::OP_DROP)
+			      .push_int(htlc.cltv_expiry as i64)
+			      .push_opcode(opcodes::all::OP_CLTV)
+			      .push_opcode(opcodes::all::OP_DROP)
+			      .push_opcode(opcodes::all::OP_CHECKSIG)
+			      .push_opcode(opcodes::all::OP_ENDIF);
 		if opt_anchors {
 			bldr = bldr.push_opcode(opcodes::all::OP_PUSHNUM_1)
 				.push_opcode(opcodes::all::OP_CSV)
@@ -660,7 +662,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 
 #[inline]
 pub(crate) fn get_custom_output_redeemscript_with_explicit_keys(custom_output: &CustomOutputInCommitment, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
-        // TODO(10101): Build custom output script (or pass it in as an argument!)
+	// TODO(10101): Build custom output script (or pass it in as an argument!)
 	Script::new()
 }
 
@@ -985,7 +987,7 @@ impl HolderCommitmentTransaction {
 			opt_anchors: None
 		};
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
-                let mut custom_outputs = Vec::new();
+		let mut custom_outputs = Vec::new();
 		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, false, dummy_key.clone(), dummy_key.clone(), keys, 0, &mut htlcs_with_aux, &mut custom_outputs, &channel_parameters.as_counterparty_broadcastable());
 		HolderCommitmentTransaction {
 			inner,
@@ -1199,7 +1201,7 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: u64,
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
-        custom_outputs: Vec<CustomOutputInCommitment>,
+	custom_outputs: Vec<CustomOutputInCommitment>,
 	// A boolean that is serialization backwards-compatible
 	opt_anchors: Option<()>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
@@ -1235,7 +1237,7 @@ impl_writeable_tlv_based!(CommitmentTransaction, {
 	(10, built, required),
 	(12, htlcs, vec_type),
 	(14, opt_anchors, option),
-        (16, custom_outputs, vec_type),
+	(16, custom_outputs, vec_type),
 });
 
 impl CommitmentTransaction {
@@ -1265,7 +1267,7 @@ impl CommitmentTransaction {
 			custom_outputs,
 			opt_anchors: if opt_anchors { Some(()) } else { None },
 			keys,
-                        built: BuiltCommitmentTransaction {
+			built: BuiltCommitmentTransaction {
 				transaction,
 				txid
 			},
@@ -1276,7 +1278,7 @@ impl CommitmentTransaction {
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(self.commitment_number, channel_parameters);
 
 		let mut htlcs_with_aux = self.htlcs.iter().map(|h| (h.clone(), ())).collect();
-                let mut custom_outputs = self.custom_outputs.clone();
+		let mut custom_outputs = self.custom_outputs.clone();
 		let (outputs, _, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, &mut custom_outputs, channel_parameters, self.opt_anchors.is_some(), broadcaster_funding_key, countersignatory_funding_key)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
@@ -1319,7 +1321,7 @@ impl CommitmentTransaction {
 					value: to_countersignatory_value_sat,
 				},
 				None,
-                                None,
+				None,
 			))
 		}
 
@@ -1335,7 +1337,7 @@ impl CommitmentTransaction {
 					value: to_broadcaster_value_sat,
 				},
 				None,
-                                None,
+				None,
 			));
 		}
 
@@ -1348,7 +1350,7 @@ impl CommitmentTransaction {
 						value: ANCHOR_OUTPUT_VALUE_SATOSHI,
 					},
 					None,
-                                        None,
+					None,
 				));
 			}
 
@@ -1360,7 +1362,7 @@ impl CommitmentTransaction {
 						value: ANCHOR_OUTPUT_VALUE_SATOSHI,
 					},
 					None,
-                                        None,
+					None,
 				));
 			}
 		}
@@ -1375,12 +1377,12 @@ impl CommitmentTransaction {
 			txouts.push((txout, Some(htlc), None));
 		}
 
-                let mut custom_outputs = Vec::with_capacity(custom_outputs_in_commitment.len());
-                for custom_output_in_commitment in custom_outputs_in_commitment {
+		let mut custom_outputs = Vec::with_capacity(custom_outputs_in_commitment.len());
+		for custom_output_in_commitment in custom_outputs_in_commitment {
 			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment, &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
-				value: custom_output_in_commitment.amount_msat / 1000,
+				value: custom_output_in_commitment.amount_dialer_msat / 1000,
 			};
 			txouts.push((txout, None, Some(custom_output_in_commitment)));
 		}
@@ -1388,42 +1390,42 @@ impl CommitmentTransaction {
 		// Sort output in BIP-69 order (amount, scriptPubkey).  Tie-breaks based on HTLC
 		// CLTV expiration height.
 		sort_outputs(&mut txouts,
-                             |a: &Option<&mut HTLCOutputInCommitment>, b: &Option<&mut HTLCOutputInCommitment>| {
-			             if let &Some(ref a_htlcout) = a {
-				             if let &Some(ref b_htlcout) = b {
-					             a_htlcout.cltv_expiry.cmp(&b_htlcout.cltv_expiry)
+			     |a: &Option<&mut HTLCOutputInCommitment>, b: &Option<&mut HTLCOutputInCommitment>| {
+				     if let &Some(ref a_htlcout) = a {
+					     if let &Some(ref b_htlcout) = b {
+						     a_htlcout.cltv_expiry.cmp(&b_htlcout.cltv_expiry)
 						     // Note that due to hash collisions, we have to have a fallback comparison
 						     // here for fuzzing mode (otherwise at least chanmon_fail_consistency
 						     // may fail)!
-						             .then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
-				                     // For non-HTLC outputs, if they're copying our SPK we don't really care if we
-				                     // close the channel due to mismatches - they're doing something dumb:
-				             } else { cmp::Ordering::Equal }
-			             } else { cmp::Ordering::Equal }
-                             },
-                             |a: &Option<&mut CustomOutputInCommitment>, b: &Option<&mut CustomOutputInCommitment>| {
-                                     if let &Some(ref a_custom_output) = a {
-				             if let &Some(ref b_custom_output) = b {
-					             a_custom_output.cltv_expiry.cmp(&b_custom_output.cltv_expiry)
-				             } else { cmp::Ordering::Equal }
-			             } else { cmp::Ordering::Equal }
-                             }
+							     .then(a_htlcout.payment_hash.0.cmp(&b_htlcout.payment_hash.0))
+						     // For non-HTLC outputs, if they're copying our SPK we don't really care if we
+						     // close the channel due to mismatches - they're doing something dumb:
+					     } else { cmp::Ordering::Equal }
+				     } else { cmp::Ordering::Equal }
+			     },
+			     |a: &Option<&mut CustomOutputInCommitment>, b: &Option<&mut CustomOutputInCommitment>| {
+				     if let &Some(ref a_custom_output) = a {
+					     if let &Some(ref b_custom_output) = b {
+						     a_custom_output.cltv_expiry.cmp(&b_custom_output.cltv_expiry)
+					     } else { cmp::Ordering::Equal }
+				     } else { cmp::Ordering::Equal }
+			     }
 		);
 
 		let mut outputs = Vec::with_capacity(txouts.len());
 		for (idx, out) in txouts.drain(..).enumerate() {
-                        match (out.1, out.2) {
-                                (None, None) => {},
-                                (Some(htlc), None) => {
-                                        htlc.transaction_output_index = Some(idx as u32);
-				        htlcs.push(htlc.clone());
-                                },
-                                (None, Some(custom_output)) => {
-                                        custom_output.transaction_output_index = Some(idx as u32);
-				        custom_outputs.push(custom_output.clone());
-                                },
-                                (Some(_), Some(_)) => unreachable!("Output cannot be both HTLC and custom!"),
-                        }
+			match (out.1, out.2) {
+				(None, None) => {},
+				(Some(htlc), None) => {
+					htlc.transaction_output_index = Some(idx as u32);
+					htlcs.push(htlc.clone());
+				},
+				(None, Some(custom_output)) => {
+					custom_output.transaction_output_index = Some(idx as u32);
+					custom_outputs.push(custom_output.clone());
+				},
+				(Some(_), Some(_)) => unreachable!("Output cannot be both HTLC and custom!"),
+			}
 
 			outputs.push(out.0);
 		}
@@ -1696,7 +1698,7 @@ mod tests {
 		};
 
 		let mut htlcs_with_aux: Vec<(_, ())> = Vec::new();
-                let mut custom_outputs: Vec<_> = Vec::new();
+		let mut custom_outputs: Vec<_> = Vec::new();
 
 		// Generate broadcaster and counterparty outputs
 		let tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
@@ -1706,8 +1708,8 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut htlcs_with_aux,
-                        &mut custom_outputs,
-                        &channel_parameters.as_holder_broadcastable()
+			&mut custom_outputs,
+			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_p2wpkh_redeemscript(&counterparty_pubkeys.payment_point));
@@ -1720,8 +1722,8 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut htlcs_with_aux,
-                        &mut custom_outputs,
-                        &channel_parameters.as_holder_broadcastable()
+			&mut custom_outputs,
+			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 4);
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&counterparty_pubkeys.payment_point).to_v0_p2wsh());
@@ -1734,8 +1736,8 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut htlcs_with_aux,
-                        &mut custom_outputs,
-                        &channel_parameters.as_holder_broadcastable()
+			&mut custom_outputs,
+			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
 
@@ -1747,8 +1749,8 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut htlcs_with_aux,
-                        &mut custom_outputs,
-                        &channel_parameters.as_holder_broadcastable()
+			&mut custom_outputs,
+			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 2);
 
@@ -1776,7 +1778,7 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())],
-                        &mut custom_outputs,
+			&mut custom_outputs,
 			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 3);
@@ -1796,7 +1798,7 @@ mod tests {
 			counterparty_pubkeys.funding_pubkey,
 			keys.clone(), 1,
 			&mut vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())],
-                        &mut custom_outputs,
+			&mut custom_outputs,
 			&channel_parameters.as_holder_broadcastable()
 		);
 		assert_eq!(tx.built.transaction.output.len(), 5);
