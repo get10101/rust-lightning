@@ -420,6 +420,7 @@ macro_rules! get_revoke_commit_msgs {
 		{
 			use $crate::util::events::MessageSendEvent;
 			let events = $node.node.get_and_clear_pending_msg_events();
+			dbg!(&events);
 			assert_eq!(events.len(), 2);
 			(match events[0] {
 				MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {

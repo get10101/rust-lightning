@@ -229,6 +229,7 @@ struct CustomOutput {
 }
 
 // TODO(10101): The variants are tentative
+#[derive(PartialEq)]
 enum CustomOutputState {
 	LocalAnnounced, // TODO(10101): Might need to add `Box<msgs::OnionPacket>` like for `OutboundHTLCState::LocalAnnounced`
 	RemoteAnnounced,
@@ -386,6 +387,7 @@ pub struct CommitmentStats<'a> {
 	feerate_per_kw: u32, // the feerate included to build the transaction
 	total_fee_sat: u64, // the total fee included in the transaction
 	num_nondust_htlcs: usize,  // the number of HTLC outputs (dust HTLCs *non*-included)
+	num_nondust_custom_outputs: usize, // the number of custom outputs (dust custom outputs *non*included)
 	htlcs_included: Vec<(HTLCOutputInCommitment, Option<&'a HTLCSource>)>, // the list of HTLCs (dust HTLCs *included*) which were not ignored when building the transaction
 	local_balance_msat: u64, // local balance before fees but considering dust limits
 	remote_balance_msat: u64, // remote balance before fees but considering dust limits
@@ -789,6 +791,7 @@ pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
 
 #[cfg(not(test))]
 const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+const COMMITMENT_TX_WEIGHT_PER_CUSTOM_OUTPUT: u64 = 172;
 #[cfg(test)]
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
@@ -966,7 +969,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::Normal);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors);
+		let commitment_tx_fee = Self::commit_tx_fee_msat(feerate, MIN_AFFORDABLE_HTLC_COUNT, 0, opt_anchors);
 		if value_to_self_msat < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -1274,7 +1277,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// check if the funder's amount for the initial commitment tx is sufficient
 		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
 		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		let commitment_tx_fee = Self::commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, opt_anchors) / 1000;
+		let commitment_tx_fee = Self::commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, 0,opt_anchors) / 1000;
 		if funders_amount_msat / 1000 < commitment_tx_fee {
 			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", funders_amount_msat / 1000, commitment_tx_fee)));
 		}
@@ -1615,6 +1618,8 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
+		let mut from_self_custom_output_msat = 0;
+		let mut from_remote_custom_output_msat = 0;
 		for ref custom_output in self.pending_custom_outputs.iter() {
 			let state_name = match custom_output.state {
 				CustomOutputState::LocalAnnounced => "LocalAnnounced",
@@ -1648,15 +1653,32 @@ impl<Signer: Sign> Channel<Signer> {
 			);
 
 			included_custom_outputs.push(custom_output_in_tx);
+
+			// TODO(10101): subtract amounts from each side
+			match custom_output.state {
+				CustomOutputState::LocalAnnounced => {
+					// we have announced the custom output, and for now all the output comes from us
+					from_self_custom_output_msat += custom_output.amount_msat;
+				}
+				CustomOutputState::RemoteAnnounced => {
+					// remote announced the custom output, and for now all the output comes from them
+					from_remote_custom_output_msat += custom_output.amount_msat;
+				}
+				CustomOutputState::AwaitingRemoteRevoke => {
+					// remote announced and revoked the commit already, and for now all the output comes from them
+					from_remote_custom_output_msat += custom_output.amount_msat;
+				}
+				CustomOutputState::AwaitingRemovedRemoteRevoke | CustomOutputState::RemoteSettled | CustomOutputState::Committed | CustomOutputState::AwaitingRemoteRevokeToSettle => { unimplemented!("Not used so far") }
+			}
 		}
 
-		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat) as i64 + value_to_self_msat_offset;
+		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat - from_self_custom_output_msat) as i64 + value_to_self_msat_offset;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
 		// "violate" their reserve value by couting those against it. Thus, we have to convert
 		// everything to i64 before subtracting as otherwise we can overflow.
-		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat as i64) - (remote_htlc_total_msat as i64) - value_to_self_msat_offset;
+		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat) as i64 - (remote_htlc_total_msat as i64) - value_to_self_msat_offset - from_remote_custom_output_msat as i64;
 		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
@@ -1674,7 +1696,7 @@ impl<Signer: Sign> Channel<Signer> {
 			broadcaster_max_commitment_tx_output.1 = cmp::max(broadcaster_max_commitment_tx_output.1, value_to_remote_msat as u64);
 		}
 
-		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), self.channel_transaction_parameters.opt_anchors.is_some());
+		let total_fee_sat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, included_non_dust_htlcs.len(), included_custom_outputs.len(), self.channel_transaction_parameters.opt_anchors.is_some());
 		let anchors_val = if self.channel_transaction_parameters.opt_anchors.is_some() { ANCHOR_OUTPUT_VALUE_SATOSHI * 2 } else { 0 } as i64;
 		let (value_to_self, value_to_remote) = if self.is_outbound() {
 			(value_to_self_msat / 1000 - anchors_val - total_fee_sat as i64, value_to_remote_msat / 1000)
@@ -1733,6 +1755,7 @@ impl<Signer: Sign> Channel<Signer> {
 			feerate_per_kw,
 			total_fee_sat,
 			num_nondust_htlcs,
+			num_nondust_custom_outputs: included_custom_outputs.len(),
 			htlcs_included,
 			local_balance_msat: value_to_self_msat as u64,
 			remote_balance_msat: value_to_remote_msat as u64,
@@ -2608,19 +2631,19 @@ impl<Signer: Sign> Channel<Signer> {
 		(self.holder_selected_channel_reserve_satoshis, self.counterparty_selected_channel_reserve_satoshis)
 	}
 
-	// Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
-	// Note that num_htlcs should not include dust HTLCs.
-	fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
+	// Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs and custom outputs.
+	// Note that num_htlcs should not include dust HTLCs nor dust custom outputs.
+	fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, num_custom_outputs: usize, opt_anchors: bool) -> u64 {
 		// Note that we need to divide before multiplying to round properly,
 		// since the lowest denomination of bitcoin on-chain is the satoshi.
-		(commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
+		(commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC + num_custom_outputs as u64 * COMMITMENT_TX_WEIGHT_PER_CUSTOM_OUTPUT) * feerate_per_kw as u64 / 1000 * 1000
 	}
 
-	// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
-	// Note that num_htlcs should not include dust HTLCs.
+	// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs and custom outputs.
+	// Note that num_htlcs should not include dust HTLCs nor dust custom outputs
 	#[inline]
-	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, opt_anchors: bool) -> u64 {
-		feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
+	fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, num_custom_outputs: usize, opt_anchors: bool) -> u64 {
+		feerate_per_kw as u64 * (commitment_tx_base_weight(opt_anchors) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC + num_custom_outputs as u64 * COMMITMENT_TX_WEIGHT_PER_CUSTOM_OUTPUT) / 1000
 	}
 
 	// Get the commitment tx fee for the local's (i.e. our) next commitment transaction based on the
@@ -2693,12 +2716,14 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, self.opt_anchors());
+		// TODO(10101): do we need to know how many custom outputs are here?
+		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, 0, self.opt_anchors());
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, self.opt_anchors());
+				// TODO(10101): do we need to know how many custom outputs are here?
+				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, 0, self.opt_anchors());
 			}
 			let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len()
 				+ self.holding_cell_htlc_updates.len();
@@ -2777,12 +2802,14 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, self.opt_anchors());
+		// TODO(10101): do we need to know how many custom outputs are here?
+		let res = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs, 0,self.opt_anchors());
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, self.opt_anchors());
+				// TODO(10101): do we need to know how many custom outputs are here?
+				fee = Self::commit_tx_fee_msat(self.feerate_per_kw, num_htlcs - 1, 0,self.opt_anchors());
 			}
 			let total_pending_htlcs = self.pending_inbound_htlcs.len() + self.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -3700,7 +3727,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let outbound_stats = self.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = if let Ok(keys) = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number) { keys } else { return None; };
 		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
-		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.opt_anchors()) * 1000;
+		let buffer_fee_msat = Channel::<Signer>::commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, commitment_stats.num_nondust_custom_outputs, self.opt_anchors()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
@@ -5925,6 +5952,7 @@ impl<Signer: Sign> Channel<Signer> {
 			updates: vec![ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo {
 				commitment_txid: counterparty_commitment_txid,
 				htlc_outputs: htlcs.clone(),
+				// TODO(10101): we might need to pass in the custom ouptuts to monitor them
 				commitment_number: self.cur_counterparty_commitment_transaction_number,
 				their_per_commitment_point: self.counterparty_cur_commitment_point.unwrap()
 			}]
@@ -5952,7 +5980,7 @@ impl<Signer: Sign> Channel<Signer> {
 						&& info.next_holder_htlc_id == self.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.next_counterparty_htlc_id
 						&& info.feerate == self.feerate_per_kw {
-							let actual_fee = Self::commit_tx_fee_msat(self.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.opt_anchors());
+							let actual_fee = Self::commit_tx_fee_msat(self.feerate_per_kw, commitment_stats.num_nondust_htlcs, commitment_stats.num_nondust_custom_outputs, self.opt_anchors());
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -7201,13 +7229,13 @@ mod tests {
 		// the dust limit check.
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let local_commit_tx_fee = node_a_chan.next_local_commit_tx_fee_msat(htlc_candidate, None);
-		let local_commit_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 0, node_a_chan.opt_anchors());
+		let local_commit_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 0, 0,node_a_chan.opt_anchors());
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
 		// Finally, make sure that when Node A calculates the remote's commitment transaction fees, all
 		// of the HTLCs are seen to be above the dust limit.
 		node_a_chan.channel_transaction_parameters.is_outbound_from_holder = false;
-		let remote_commit_fee_3_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 3, node_a_chan.opt_anchors());
+		let remote_commit_fee_3_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(node_a_chan.feerate_per_kw, 3, 0, node_a_chan.opt_anchors());
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let remote_commit_tx_fee = node_a_chan.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
@@ -7229,8 +7257,9 @@ mod tests {
 		let config = UserConfig::default();
 		let mut chan = Channel::<EnforcingSigner>::new_outbound(&fee_est, &&keys_provider, node_id, &channelmanager::provided_init_features(), 10000000, 100000, 42, &config, 0, 42).unwrap();
 
-		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, chan.opt_anchors());
-		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, chan.opt_anchors());
+		let commitment_tx_fee_0_htlcs = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 0, 0,chan.opt_anchors());
+		let commitment_tx_fee_1_htlc = Channel::<EnforcingSigner>::commit_tx_fee_msat(chan.feerate_per_kw, 1, 0, chan.opt_anchors());
+		// TODO(10101): we could write a similar test for calculating the fees
 
 		// If HTLC_SUCCESS_TX_WEIGHT and HTLC_TIMEOUT_TX_WEIGHT were swapped: then this HTLC would be
 		// counted as dust when it shouldn't be.
