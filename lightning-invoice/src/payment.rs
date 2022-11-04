@@ -284,7 +284,7 @@ pub trait Router {
 	) -> Result<Route, LightningError>;
 	/// Gets custom output route details.
 	fn add_custom_output_route_details(
-		&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+		&self, local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
 	) -> Result<AddCustomOutputRouteDetails, LightningError>;
 	/// Lets the router know that payment through a specific path has failed.
 	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
@@ -452,7 +452,7 @@ where
 	/// TODO(10101): Docs
 	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
 	pub fn add_custom_output(
-		&self, pubkey: PublicKey, amount_dialer_msats: u64, amount_listener_msats: u64, final_cltv_expiry_delta: u32
+		&self, pubkey: PublicKey, amount_local_msats: u64, amount_remote_msats: u64, final_cltv_expiry_delta: u32
 	) -> Result<(), PaymentError> {
 		// TODO: We might have more than one channel with the peer identified by the
 		// `pubkey` argument. We will need to use a heuristic to select a channel among all
@@ -471,8 +471,8 @@ where
 
 		let route_details = self.router.add_custom_output_route_details(
 			&self.payer.node_id(), // The node ID of the sender OK
-			amount_dialer_msats,
-			amount_listener_msats,
+			amount_local_msats,
+			amount_remote_msats,
 			final_cltv_expiry_delta,
 			channel_details,
 		).map_err(|e| PaymentError::Routing(e))?;
@@ -1911,7 +1911,7 @@ mod tests {
 		}
 
 		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
 		) -> Result<AddCustomOutputRouteDetails, LightningError> {
 			todo!()
 		}
@@ -1936,7 +1936,7 @@ mod tests {
 		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
 		) -> Result<AddCustomOutputRouteDetails, LightningError> {
 			todo!()
 		}
@@ -2211,7 +2211,7 @@ mod tests {
 		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry_delta: u32, channel_details: ChannelDetails,
+			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry_delta: u32, channel_details: ChannelDetails,
 		) -> Result<AddCustomOutputRouteDetails, LightningError> {
 			todo!()
     }

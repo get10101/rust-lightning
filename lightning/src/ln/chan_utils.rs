@@ -565,10 +565,10 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 /// Information about a custom output as it appears in a commitment transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomOutputInCommitment {
-	/// The value, in msat, of the custom output provided by the protocol dialer.
-	pub amount_dialer_msat: u64,
-	/// The value, in msat, of the custom output provided by the protocol listener.
-	pub amount_listener_msat: u64,
+	/// The value, in msat, of the custom output provided by the local node.
+	pub amount_local_msat: u64,
+	/// The value, in msat, of the custom output provided by the remote node.
+	pub amount_remote_msat: u64,
 	/// The CLTV lock-time at which this custom output expires.
 	pub cltv_expiry: u32,
 	/// The position within the commitment transactions' outputs.
@@ -579,8 +579,8 @@ pub struct CustomOutputInCommitment {
 }
 
 impl_writeable_tlv_based!(CustomOutputInCommitment, {
-	(0, amount_dialer_msat, required),
-	(2, amount_listener_msat, required),
+	(0, amount_local_msat, required),
+	(2, amount_remote_msat, required),
 	(4, cltv_expiry, required),
 	(6, transaction_output_index, option),
 });
@@ -1382,7 +1382,7 @@ impl CommitmentTransaction {
 			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment, &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
-				value: (custom_output_in_commitment.amount_dialer_msat + custom_output_in_commitment.amount_listener_msat) / 1000,
+				value: (custom_output_in_commitment.amount_local_msat + custom_output_in_commitment.amount_remote_msat) / 1000,
 			};
 			txouts.push((txout, None, Some(custom_output_in_commitment)));
 		}

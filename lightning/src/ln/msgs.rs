@@ -313,10 +313,10 @@ pub struct UpdateAddCustomOutput {
 	pub channel_id: [u8; 32],
 	/// The custom output ID
 	pub custom_output_id: u64,
-	/// The custom output value provided by the dialer, in milli-satoshi.
-	pub amount_dialer_msat: u64,
-	/// The custom output value provided by the listener, in milli-satoshi.
-	pub amount_listener_msat: u64,
+	/// The custom output value provided by the local node, in milli-satoshi.
+	pub amount_local_msat: u64,
+	/// The custom output value provided by the remote node, in milli-satoshi.
+	pub amount_remote_msat: u64,
 	/// The expiry height of the custom output
 	pub cltv_expiry: u32,
 	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
@@ -1984,8 +1984,8 @@ impl_writeable_msg!(GossipTimestampFilter, {
 impl_writeable_msg!(UpdateAddCustomOutput, {
 	channel_id,
 	custom_output_id,
-	amount_dialer_msat,
-	amount_listener_msat,
+	amount_local_msat,
+	amount_remote_msat,
 	cltv_expiry,
 }, {});
 
@@ -2960,8 +2960,8 @@ mod tests {
 	fn encoding_update_add_custom_output() {
 		let update_add_custom_output = msgs::UpdateAddCustomOutput {
 			channel_id: [2; 32],
-			amount_dialer_msat: 3608586615801332854,
-			amount_listener_msat: 3608586615801332854,
+			amount_local_msat: 3608586615801332854,
+			amount_remote_msat: 3608586615801332854,
 			cltv_expiry: 821716,
 			custom_output_id: 42
 		};

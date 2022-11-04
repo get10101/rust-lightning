@@ -84,8 +84,8 @@ pub struct AddCustomOutputRouteDetails {
 	pub short_channel_id: u64,
 	/// The node ID of the counterparty in the channel.
 	pub pk_counterparty: PublicKey,
-	/// The amount that we (the dialer) provide for the custom output.
-	pub amount_us_msat: u64,
+	/// The amount that the local node (we) provide for the custom output.
+	pub local_amount_msats: u64,
 	/// The amount that our counterparty (the listener) provides for the custom output.
 	pub amount_counterparty_msat: u64,
 	/// The CLTV expiry of the custom output.

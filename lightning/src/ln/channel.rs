@@ -223,8 +223,8 @@ struct OutboundHTLCOutput {
 
 struct CustomOutput {
 	custom_output_id: u64,
-	amount_dialer_msat: u64,
-	amount_listener_msat: u64,
+	amount_local_msat: u64,
+	amount_remote_msat: u64,
 	cltv_expiry: u32,
 	state: CustomOutputState,
 }
@@ -265,8 +265,8 @@ enum HTLCUpdateAwaitingACK {
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum CustomOutputUpdateAwaitingAck {
 	AddCustomOutput {
-		amount_dialer_msat: u64,
-		amount_listener_msat: u64,
+		amount_local_msat: u64,
+		amount_remote_msat: u64,
 		cltv_expiry: u32,
 	}
 }
@@ -1640,8 +1640,8 @@ impl<Signer: Sign> Channel<Signer> {
 			// Ignoring `self.opt_anchors()` for now?
 
 			let custom_output_in_tx = CustomOutputInCommitment {
-				amount_dialer_msat: custom_output.amount_dialer_msat,
-				amount_listener_msat: custom_output.amount_listener_msat,
+				amount_local_msat: custom_output.amount_local_msat,
+				amount_remote_msat: custom_output.amount_remote_msat,
 				cltv_expiry: custom_output.cltv_expiry,
 				transaction_output_index: None,
 			};
@@ -1653,7 +1653,7 @@ impl<Signer: Sign> Channel<Signer> {
 				"   ...including {} custom output {} with value {}",
 				state_name,
 				custom_output.custom_output_id,
-				custom_output.amount_dialer_msat + custom_output.amount_listener_msat
+				custom_output.amount_local_msat + custom_output.amount_remote_msat
 			);
 
 			included_custom_outputs.push(custom_output_in_tx);
@@ -1661,17 +1661,17 @@ impl<Signer: Sign> Channel<Signer> {
 			// TODO(10101): subtract amounts from each side
 			match custom_output.state {
 				CustomOutputState::LocalAnnounced => {
-					from_self_custom_output_msat += custom_output.amount_dialer_msat;
-					from_remote_custom_output_msat += custom_output.amount_listener_msat;
+					from_self_custom_output_msat += custom_output.amount_local_msat;
+					from_remote_custom_output_msat += custom_output.amount_remote_msat;
 				}
 				CustomOutputState::RemoteAnnounced => {
-					from_self_custom_output_msat += custom_output.amount_listener_msat;
-					from_remote_custom_output_msat += custom_output.amount_dialer_msat;
+					from_self_custom_output_msat += custom_output.amount_remote_msat;
+					from_remote_custom_output_msat += custom_output.amount_local_msat;
 				}
 				CustomOutputState::AwaitingRemoteRevoke => {
 					// TODO(10101): Unsure about this one
-					from_self_custom_output_msat += custom_output.amount_listener_msat;
-					from_remote_custom_output_msat += custom_output.amount_dialer_msat;
+					from_self_custom_output_msat += custom_output.amount_remote_msat;
+					from_remote_custom_output_msat += custom_output.amount_local_msat;
 				}
 				CustomOutputState::AwaitingRemovedRemoteRevoke |
 				CustomOutputState::RemoteSettled |
@@ -2614,14 +2614,14 @@ impl<Signer: Sign> Channel<Signer> {
 		for ref custom_output in self.pending_custom_outputs.iter() {
 			match custom_output.state {
 				CustomOutputState::LocalAnnounced => {
-					balance_msat -= custom_output.amount_dialer_msat;
+					balance_msat -= custom_output.amount_local_msat;
 				}
 				CustomOutputState::RemoteAnnounced => {
-					balance_msat -= custom_output.amount_listener_msat;
+					balance_msat -= custom_output.amount_remote_msat;
 				},
 				CustomOutputState::AwaitingRemoteRevoke => {
 					// TODO(10101): Unsure about this one
-					balance_msat -= custom_output.amount_listener_msat;
+					balance_msat -= custom_output.amount_remote_msat;
 				},
 				CustomOutputState::Committed |
 				CustomOutputState::RemoteSettled |
@@ -3025,7 +3025,7 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Close("Peer sent update_add_custom_output when we needed a channel_reestablish".to_owned()));
 		}
 
-		let custom_output_amount_msat = msg.amount_dialer_msat + msg.amount_listener_msat;
+		let custom_output_amount_msat = msg.amount_local_msat + msg.amount_remote_msat;
 		if custom_output_amount_msat > self.channel_value_satoshis * 1000 {
 			return Err(ChannelError::Close(
 				"Remote side tried to create custom output with a value greater than the total value of the channel".to_owned()
@@ -3049,8 +3049,8 @@ impl<Signer: Sign> Channel<Signer> {
 		self.pending_custom_outputs.push(
 			CustomOutput {
 				custom_output_id: msg.custom_output_id,
-				amount_dialer_msat: msg.amount_dialer_msat,
-				amount_listener_msat: msg.amount_listener_msat,
+				amount_local_msat: msg.amount_local_msat,
+				amount_remote_msat: msg.amount_remote_msat,
 				cltv_expiry: msg.cltv_expiry,
 				state: CustomOutputState::RemoteAnnounced,
 			}
@@ -5884,8 +5884,8 @@ impl<Signer: Sign> Channel<Signer> {
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			self.holding_cell_custom_output_updates.push(
 				CustomOutputUpdateAwaitingAck::AddCustomOutput {
-					amount_dialer_msat: amount_us_msat,
-					amount_listener_msat: amount_counterparty_msat,
+					amount_local_msat: amount_us_msat,
+					amount_remote_msat: amount_counterparty_msat,
 					cltv_expiry
 				}
 			);
@@ -5895,8 +5895,8 @@ impl<Signer: Sign> Channel<Signer> {
 		self.pending_custom_outputs.push(
 			CustomOutput {
 				custom_output_id: self.next_holder_custom_output_id,
-				amount_dialer_msat: amount_us_msat,
-				amount_listener_msat: amount_counterparty_msat,
+				amount_local_msat: amount_us_msat,
+				amount_remote_msat: amount_counterparty_msat,
 				cltv_expiry,
 				state: CustomOutputState::LocalAnnounced
 			}
@@ -5905,8 +5905,8 @@ impl<Signer: Sign> Channel<Signer> {
 		let res = msgs::UpdateAddCustomOutput {
 			channel_id: self.channel_id,
 			custom_output_id: self.next_holder_custom_output_id,
-			amount_dialer_msat: amount_us_msat,
-			amount_listener_msat: amount_counterparty_msat,
+			amount_local_msat: amount_us_msat,
+			amount_remote_msat: amount_counterparty_msat,
 			cltv_expiry,
 		};
 		self.next_holder_custom_output_id += 1;
@@ -6415,8 +6415,8 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		(self.pending_custom_outputs.len() as u64).write(writer)?;
 		for custom_output in self.pending_custom_outputs.iter() {
 			custom_output.custom_output_id.write(writer)?;
-			custom_output.amount_dialer_msat.write(writer)?;
-			custom_output.amount_listener_msat.write(writer)?;
+			custom_output.amount_local_msat.write(writer)?;
+			custom_output.amount_remote_msat.write(writer)?;
 			custom_output.cltv_expiry.write(writer)?;
 			match &custom_output.state {
 				CustomOutputState::LocalAnnounced => {
@@ -6470,10 +6470,10 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		(self.holding_cell_custom_output_updates.len() as u64).write(writer)?;
 		for update in self.holding_cell_custom_output_updates.iter() {
 			match update {
-				CustomOutputUpdateAwaitingAck::AddCustomOutput { amount_dialer_msat, amount_listener_msat, cltv_expiry } => {
+				CustomOutputUpdateAwaitingAck::AddCustomOutput { amount_local_msat, amount_remote_msat, cltv_expiry } => {
 					0u8.write(writer)?;
-					amount_dialer_msat.write(writer)?;
-					amount_listener_msat.write(writer)?;
+					amount_local_msat.write(writer)?;
+					amount_remote_msat.write(writer)?;
 					cltv_expiry.write(writer)?;
 				},
 			}
@@ -6723,8 +6723,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		for _ in 0..pending_custom_output_count {
 			pending_custom_outputs.push(CustomOutput {
 				custom_output_id: Readable::read(reader)?,
-				amount_dialer_msat: Readable::read(reader)?,
-				amount_listener_msat: Readable::read(reader)?,
+				amount_local_msat: Readable::read(reader)?,
+				amount_remote_msat: Readable::read(reader)?,
 				cltv_expiry: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					0 => CustomOutputState::LocalAnnounced,
@@ -6768,8 +6768,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		for _ in 0..holding_cell_custom_output_count {
 			holding_cell_custom_output_updates.push(match <u8 as Readable>::read(reader)? {
 				0 => CustomOutputUpdateAwaitingAck::AddCustomOutput {
-					amount_dialer_msat: Readable::read(reader)?,
-					amount_listener_msat: Readable::read(reader)?,
+					amount_local_msat: Readable::read(reader)?,
+					amount_remote_msat: Readable::read(reader)?,
 					cltv_expiry: Readable::read(reader)?,
 				},
 				_ => return Err(DecodeError::InvalidValue),

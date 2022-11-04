@@ -585,7 +585,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	}
 
 	fn add_custom_output_route_details(
-		&self, dialer_pk: &PublicKey, dialer_amount_msats: u64, listener_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+		&self, local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
 	) -> Result<AddCustomOutputRouteDetails, LightningError> {
 		let ChannelDetails { outbound_capacity_msat, inbound_capacity_msat, short_channel_id, counterparty, .. } = channel_details;
 
@@ -594,22 +594,22 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 			action: ErrorAction::IgnoreError
 		})?;
 
-		if dialer_amount_msats > outbound_capacity_msat {
+		if local_amount_msats > outbound_capacity_msat {
 			return Err(LightningError {
 				err: format!(
 					"Cannot create custom output with insufficient outbound liquidity.
-					 Needed: {dialer_amount_msats};
+					 Needed: {local_amount_msats};
 					 available: {outbound_capacity_msat}"
 				),
 				action: ErrorAction::IgnoreError
 			});
 		}
 
-		if listener_amount_msats > inbound_capacity_msat {
+		if remote_amount_msats > inbound_capacity_msat {
 			return Err(LightningError {
 				err: format!(
 					"Cannot create custom output with insufficient inbound liquidity.
-					 Needed: {listener_amount_msats};
+					 Needed: {remote_amount_msats};
 					 available: {inbound_capacity_msat}"
 				),
 				action: ErrorAction::IgnoreError
@@ -618,7 +618,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 
 
 		Ok(AddCustomOutputRouteDetails {
-			short_channel_id, pk_counterparty: counterparty.node_id, amount_us_msat: dialer_amount_msats, amount_counterparty_msat: listener_amount_msats, cltv_expiry })
+			short_channel_id, pk_counterparty: counterparty.node_id, local_amount_msats, amount_counterparty_msat: remote_amount_msats, cltv_expiry })
 	}
 }
 
@@ -647,7 +647,7 @@ where
 	fn add_custom_output(
 		&self, route_details: AddCustomOutputRouteDetails,
 	) -> Result<(), String> {
-		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
+		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, local_amount_msats: amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
 
 		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry)
 	}
