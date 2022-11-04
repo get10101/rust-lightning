@@ -1382,7 +1382,7 @@ impl CommitmentTransaction {
 			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment, &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
-				value: custom_output_in_commitment.amount_dialer_msat + custom_output_in_commitment.amount_listener_msat / 1000,
+				value: (custom_output_in_commitment.amount_dialer_msat + custom_output_in_commitment.amount_listener_msat) / 1000,
 			};
 			txouts.push((txout, None, Some(custom_output_in_commitment)));
 		}
