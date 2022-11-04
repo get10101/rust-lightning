@@ -382,6 +382,19 @@ struct HTLCStats {
 	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
+// Gathering stats on pending custom outputs, either inbound or outbound side
+struct CustomOutputInboundStats {
+	pending_custom_outputs: u32,
+	pending_custom_outputs_msat: u64,
+}
+
+// Gathering stats on pending custom outputs, either inbound or outbound side
+struct CustomOutputOutboundStats {
+	pending_custom_outputs: u32,
+	pending_custom_outputs_msat: u64,
+}
+
+
 /// An enum gathering stats on commitment transaction, either local or remote.
 #[derive(Debug)]
 pub struct CommitmentStats<'a> {
@@ -2547,6 +2560,31 @@ impl<Signer: Sign> Channel<Signer> {
 		stats
 	}
 
+	fn get_inbound_pending_custom_output_stats(&self) -> CustomOutputInboundStats {
+		let mut sum_msats = 0;
+		for ref output in self.pending_custom_outputs.iter() {
+			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
+			sum_msats += output.amount_remote_msat;
+		}
+		CustomOutputInboundStats {
+			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
+			pending_custom_outputs_msat: sum_msats
+		}
+
+	}
+
+	fn get_outbound_pending_custom_output_stats(&self) -> CustomOutputOutboundStats {
+		let mut sum_msats = 0;
+		for ref output in self.pending_custom_outputs.iter() {
+			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
+			sum_msats += output.amount_local_msat;
+		}
+		CustomOutputOutboundStats {
+			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
+			pending_custom_outputs_msat: sum_msats
+		}
+	}
+
 	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
 	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let mut stats = HTLCStats {
@@ -2635,12 +2673,14 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
 				- outbound_stats.pending_htlcs_value_msat as i64
-				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000,
-			0) as u64;
+				- self.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) as i64 * 1000
+				- self.get_outbound_pending_custom_output_stats().pending_custom_outputs_msat as i64,
+											  0) as u64;
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(self.channel_value_satoshis as i64 * 1000
 					- self.value_to_self_msat as i64
 					- self.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
+					- self.get_inbound_pending_custom_output_stats().pending_custom_outputs_msat as i64
 					- self.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
