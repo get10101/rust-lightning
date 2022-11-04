@@ -791,6 +791,7 @@ pub(crate) fn commitment_tx_base_weight(opt_anchors: bool) -> u64 {
 
 #[cfg(not(test))]
 const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
+// TODO(10101): this needs to updated once we know the custom output script
 const COMMITMENT_TX_WEIGHT_PER_CUSTOM_OUTPUT: u64 = 172;
 #[cfg(test)]
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
