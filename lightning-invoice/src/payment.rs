@@ -64,6 +64,10 @@
 //! #     fn send_spontaneous_payment(
 //! #         &self, route: &Route, payment_preimage: PaymentPreimage
 //! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
+//!
+//! #   fn add_custom_output(&self, route: &Route) -> Result<(), String> {
+//! #        todo!()
+//! #   }
 //! #     fn retry_payment(
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
@@ -107,7 +111,7 @@
 //!     match event {
 //!         Event::PaymentPathFailed { .. } => println!("payment failed after retries"),
 //!         Event::PaymentSent { .. } => println!("payment successful"),
-//!         _ => {},
+//!         _ => {}
 //!     }
 //! };
 //! # let payer = FakePayer {};
