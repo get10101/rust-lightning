@@ -1054,12 +1054,6 @@ fn test_add_custom_output() {
 	};
 	dbg!("Node1 got msg events");
 
-	// TODO(10101): This can be removed: fee rate was not updated in this case
-	// nodes[0]
-	//     .node
-	//     .handle_update_fee(&nodes[1].node.get_our_node_id(), update_fee.unwrap());
-	// dbg!("Node0 handled update fee");
-
 	nodes[0]
 		.node
 		.handle_update_add_custom_output(&nodes[1].node.get_our_node_id(), &update_add_custom_output[0]);
