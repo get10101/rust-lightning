@@ -315,9 +315,9 @@ pub struct UpdateAddCustomOutput {
 	/// The custom output ID
 	pub custom_output_id: CustomOutputId,
 	/// The custom output value provided by the local node, in milli-satoshi.
-	pub amount_local_msat: u64,
+	pub sender_amount_msat: u64,
 	/// The custom output value provided by the remote node, in milli-satoshi.
-	pub amount_remote_msat: u64,
+	pub receiver_amount_msat: u64,
 	/// The expiry height of the custom output
 	pub cltv_expiry: u32,
 	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
@@ -331,9 +331,9 @@ pub struct UpdateRemoveCustomOutput {
 	/// The custom output ID
 	pub custom_output_id: CustomOutputId,
 	/// The custom output value given back to the local node, in milli-satoshi.
-	pub local_amount_msat: u64,
+	pub sender_amount_msat: u64,
 	/// The custom output value given back to the remote node, in milli-satoshi.
-	pub remote_amount_msat: u64,
+	pub receiver_amount_msat: u64,
 }
 
  /// An onion message to be sent or received from a peer
@@ -1415,8 +1415,8 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 impl_writeable_msg!(UpdateRemoveCustomOutput, {
 	channel_id,
 	custom_output_id,
-	local_amount_msat,
-	remote_amount_msat
+	sender_amount_msat,
+	receiver_amount_msat
 }, {});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
@@ -2010,8 +2010,8 @@ impl_writeable_msg!(GossipTimestampFilter, {
 impl_writeable_msg!(UpdateAddCustomOutput, {
 	channel_id,
 	custom_output_id,
-	amount_local_msat,
-	amount_remote_msat,
+	sender_amount_msat,
+	receiver_amount_msat,
 	cltv_expiry,
 }, {});
 
@@ -2987,8 +2987,8 @@ mod tests {
 	fn encoding_update_add_custom_output() {
 		let update_add_custom_output = msgs::UpdateAddCustomOutput {
 			channel_id: [2; 32],
-			amount_local_msat: 3608586615801332854,
-			amount_remote_msat: 3608586615801332854,
+			sender_amount_msat: 3608586615801332854,
+			receiver_amount_msat: 3608586615801332854,
 			cltv_expiry: 821716,
 			custom_output_id: CustomOutputId([4;32])
 		};
@@ -3003,8 +3003,8 @@ mod tests {
 		let remove_custom_output = msgs::UpdateRemoveCustomOutput {
 			channel_id: [2; 32],
 			custom_output_id: CustomOutputId([1; 32]),
-			local_amount_msat: 123,
-			remote_amount_msat: 456
+			sender_amount_msat: 123,
+			receiver_amount_msat: 456
 		};
 		let encoded_value = remove_custom_output.encode();
 		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101000000000000007b00000000000001c8").unwrap();

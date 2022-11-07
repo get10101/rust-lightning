@@ -422,13 +422,13 @@ macro_rules! get_revoke_commit_msgs {
 			let events = $node.node.get_and_clear_pending_msg_events();
 			dbg!(&events);
 			assert_eq!(events.len(), 2);
-			(match events[0] {
+			(match dbg!(&events[0]) {
 				MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 					assert_eq!(*node_id, $node_id);
 					(*msg).clone()
 				},
 				_ => panic!("Unexpected event"),
-			}, match events[1] {
+			}, match dbg!(&events[1]) {
 				MessageSendEvent::UpdateCommitmentOutputs { ref node_id, ref updates } => {
 					assert_eq!(*node_id, $node_id);
 					assert!(updates.update_add_htlcs.is_empty());

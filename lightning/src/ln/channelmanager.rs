@@ -5119,36 +5119,36 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
-	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_holder = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_holder;
 
-		match channel_state.by_id.entry(msg.channel_id) {
+		match channel_state.by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
 				}
-				try_chan_entry!(self, channel.get_mut().update_add_custom_output(&msg, &self.logger), channel_state, channel);
+				try_chan_entry!(self, channel.get_mut().update_add_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, &self.logger), channel_state, channel);
 			},
-			hash_map::Entry::Vacant(_) => todo!(),
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
 		}
 
 		Ok(())
 	}
 
 
-	fn internal_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateRemoveCustomOutput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_holder = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_holder;
 
-		match channel_state.by_id.entry(msg.channel_id) {
+		match channel_state.by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
 				}
-				try_chan_entry!(self, channel.get_mut().update_remove_custom_output(msg, &self.logger), channel_state, channel);
+				try_chan_entry!(self, channel.get_mut().update_remove_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, &self.logger), channel_state, channel);
 			},
-			hash_map::Entry::Vacant(_) => todo!(),
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
 		}
 
 		Ok(())
@@ -6334,12 +6334,24 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 
 	fn handle_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, msg), *counterparty_node_id);
+
+		let msgs::UpdateAddCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat, cltv_expiry } = *msg;
+
+		let local_amount_msat = receiver_amount_msat;
+		let remote_amount_msat = sender_amount_msat;
+
+		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry), *counterparty_node_id);
 	}
 
 	fn handle_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateRemoveCustomOutput) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-		let _ = handle_error!(self, self.internal_update_remove_custom_output(counterparty_node_id, msg), *counterparty_node_id);
+
+		let msgs::UpdateRemoveCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat } = *msg;
+
+		let local_amount_msat = receiver_amount_msat;
+		let remote_amount_msat = sender_amount_msat;
+
+		let _ = handle_error!(self, self.internal_update_remove_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat), *counterparty_node_id);
 	}
 
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
