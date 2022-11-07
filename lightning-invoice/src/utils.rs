@@ -10,7 +10,7 @@ use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY, CustomOutputId};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
@@ -646,7 +646,7 @@ where
 
 	fn add_custom_output(
 		&self, route_details: AddCustomOutputRouteDetails,
-	) -> Result<(), String> {
+	) -> Result<CustomOutputId, String> {
 		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, local_amount_msats: amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
 
 		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry)

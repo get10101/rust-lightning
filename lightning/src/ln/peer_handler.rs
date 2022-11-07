@@ -19,12 +19,12 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler, UpdateRemoveCustomOutput};
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
-use crate::ln::wire::Encode;
+use crate::ln::wire::{Encode, Message};
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::util::atomic_counter::AtomicCounter;
@@ -202,6 +202,9 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_update_remove_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateRemoveCustomOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -250,6 +253,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_zero_conf_optional();
 		features
 	}
+
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
@@ -1451,6 +1455,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::Custom(custom) => {
 				self.custom_message_handler.handle_custom_message(custom, &their_node_id)?;
 			},
+			Message::UpdateRemoveCustomOutput(msg) => {
+				self.message_handler.chan_handler.handle_update_remove_custom_output(&their_node_id, &msg);
+			}
 		};
 		Ok(should_forward)
 	}
@@ -1648,7 +1655,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
-					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 						log_debug!(self.logger, "Handling UpdateCommitmentOutputs event in peer_handler for node {} with {} htlc adds, {} custom adds, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),

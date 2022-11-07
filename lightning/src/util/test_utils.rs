@@ -53,6 +53,7 @@ use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::Sequence;
+use crate::ln::msgs::UpdateRemoveCustomOutput;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -367,6 +368,10 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	}
 	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
 		channelmanager::provided_init_features()
+	}
+
+	fn handle_update_remove_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateRemoveCustomOutput) {
+		self.received_msg(wire::Message::UpdateRemoveCustomOutput(msg.clone()));
 	}
 }
 

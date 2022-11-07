@@ -150,7 +150,7 @@ fn mpp_retry() {
 	// Add the HTLC along the first hop.
 	let fail_path_msgs_1 = events.remove(0);
 	let (update_add, commitment_signed) = match fail_path_msgs_1 {
-		MessageSendEvent::UpdateCommitmentOutputs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+		MessageSendEvent::UpdateCommitmentOutputs { node_id: _, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			assert_eq!(update_add_htlcs.len(), 1);
 			assert!(update_fail_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());

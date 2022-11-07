@@ -45,6 +45,7 @@ use crate::util::logger;
 use crate::util::ser::{BigSize, LengthReadable, Readable, ReadableArgs, Writeable, Writer, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname};
 
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::channelmanager::CustomOutputId;
 
 /// 21 million * 10^8 * 1000
 pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
@@ -312,7 +313,7 @@ pub struct UpdateAddCustomOutput {
 	/// The channel ID
 	pub channel_id: [u8; 32],
 	/// The custom output ID
-	pub custom_output_id: u64,
+	pub custom_output_id: CustomOutputId,
 	/// The custom output value provided by the local node, in milli-satoshi.
 	pub amount_local_msat: u64,
 	/// The custom output value provided by the remote node, in milli-satoshi.
@@ -320,6 +321,19 @@ pub struct UpdateAddCustomOutput {
 	/// The expiry height of the custom output
 	pub cltv_expiry: u32,
 	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
+}
+
+/// An update_remove_custom_output message to be sent or received from a peer
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateRemoveCustomOutput {
+	/// The channel ID
+	pub channel_id: [u8; 32],
+	/// The custom output ID
+	pub custom_output_id: CustomOutputId,
+	/// The custom output value given back to the local node, in milli-satoshi.
+	pub local_amount_msat: u64,
+	/// The custom output value given back to the remote node, in milli-satoshi.
+	pub remote_amount_msat: u64,
 }
 
  /// An onion message to be sent or received from a peer
@@ -340,6 +354,7 @@ pub struct UpdateFulfillHTLC {
 	/// The pre-image of the payment hash, allowing HTLC redemption
 	pub payment_preimage: PaymentPreimage,
 }
+
 
 /// An update_fail_htlc message to be sent or received from a peer
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -839,6 +854,8 @@ pub struct CommitmentUpdate {
 
 	/// TODO(10101): Add docs
 	pub update_add_custom_output: Vec<UpdateAddCustomOutput>,
+	/// A list of custom outputs which need to be removed
+	pub update_remove_custom_output: Vec<UpdateRemoveCustomOutput>
 }
 
 /// Messages could have optional fields to use with extended features
@@ -882,6 +899,8 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
 	/// Handle an incoming update_add_custom_output message from the given peer.
 	fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateAddCustomOutput);
+	/// Handle an incoming update_remove_custom_output message from the given peer.
+	fn handle_update_remove_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateRemoveCustomOutput);
 	/// Handle an incoming update_fulfill_htlc message from the given peer.
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC);
 	/// Handle an incoming update_fail_htlc message from the given peer.
@@ -1391,6 +1410,13 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
+}, {});
+
+impl_writeable_msg!(UpdateRemoveCustomOutput, {
+	channel_id,
+	custom_output_id,
+	local_amount_msat,
+	remote_amount_msat
 }, {});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
@@ -2011,6 +2037,7 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
 	use core::convert::TryFrom;
+	use crate::ln::channelmanager::CustomOutputId;
 
 	#[test]
 	fn encoding_channel_reestablish_no_secret() {
@@ -2963,11 +2990,25 @@ mod tests {
 			amount_local_msat: 3608586615801332854,
 			amount_remote_msat: 3608586615801332854,
 			cltv_expiry: 821716,
-			custom_output_id: 42
+			custom_output_id: CustomOutputId([4;32])
 		};
 		let encoded_value = update_add_custom_output.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202000000000000002a32144668701144763214466870114476000c89d4").unwrap();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202040404040404040404040404040404040404040404040404040404040404040432144668701144763214466870114476000c89d4").unwrap();
 
 		assert_eq!(encoded_value, target_value);
 	}
+
+	#[test]
+	fn encoding_remove_custom_output() {
+		let remove_custom_output = msgs::UpdateRemoveCustomOutput {
+			channel_id: [2; 32],
+			custom_output_id: CustomOutputId([1; 32]),
+			local_amount_msat: 123,
+			remote_amount_msat: 456
+		};
+		let encoded_value = remove_custom_output.encode();
+		let target_value = hex::decode("02020202020202020202020202020202020202020202020202020202020202020101010101010101010101010101010101010101010101010101010101010101000000000000007b00000000000001c8").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
 }

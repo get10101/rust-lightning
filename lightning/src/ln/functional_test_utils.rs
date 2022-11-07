@@ -1737,7 +1737,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 	macro_rules! msgs_from_ev {
 		($ev: expr) => {
 			match $ev {
-&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output} } => {
 					assert!(update_add_htlcs.is_empty());
 					assert_eq!(update_fulfill_htlcs.len(), 1);
 					assert!(update_fail_htlcs.is_empty());
@@ -1913,7 +1913,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 	assert_eq!(events.len(), expected_paths.len());
 	for ev in events.iter() {
 		let (update_fail, commitment_signed, node_id) = match ev {
-			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fulfill_htlcs.is_empty());
 				assert_eq!(update_fail_htlcs.len(), 1);
@@ -1947,7 +1947,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			if update_next_node {
 				assert_eq!(events.len(), 1);
 				match events[0] {
-					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 						assert!(update_add_htlcs.is_empty());
 						assert!(update_fulfill_htlcs.is_empty());
 						assert_eq!(update_fail_htlcs.len(), 1);

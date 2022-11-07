@@ -27,7 +27,7 @@ use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{DecodeError, OptionalField, DataLossProtect};
 use crate::ln::script::{self, ShutdownScript};
-use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, CounterpartyForwardingInfo, PendingHTLCStatus, HTLCSource, HTLCFailReason, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT, CustomOutputId};
 use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction, CustomOutputInCommitment};
 use crate::ln::chan_utils;
 use crate::chain::BestBlock;
@@ -222,8 +222,10 @@ struct OutboundHTLCOutput {
 }
 
 struct CustomOutput {
-	custom_output_id: u64,
+	custom_output_id: CustomOutputId,
+	/// Initial amount provided by local node
 	amount_local_msat: u64,
+	/// Initial amount provided by remote node
 	amount_remote_msat: u64,
 	cltv_expiry: u32,
 	state: CustomOutputState,
@@ -236,7 +238,14 @@ enum CustomOutputState {
 	RemoteAnnounced,
 	// we received RemoteAnnounced and are waiting for the remote to announce the RAA to us.
 	AwaitingRemoteRevoke,
+	LocalRemoved {
+		local_profit: i64,
+	},
+	RemoteRemoved {
+		local_profit: i64
+	},
 	Committed,
+	// TODO: I think this can be removed
 	RemoteSettled,
 	AwaitingRemoteRevokeToSettle,
 	AwaitingRemovedRemoteRevoke,
@@ -268,6 +277,10 @@ enum CustomOutputUpdateAwaitingAck {
 		amount_local_msat: u64,
 		amount_remote_msat: u64,
 		cltv_expiry: u32,
+	},
+	RemoveCustomOutput {
+		local_amount_msat: u64,
+		remote_amount_msat: u64
 	}
 }
 
@@ -589,7 +602,7 @@ pub(super) struct Channel<Signer: Sign> {
 	value_to_self_msat: u64, // Excluding all pending_htlcs, excluding fees
 	pending_inbound_htlcs: Vec<InboundHTLCOutput>,
 	pending_outbound_htlcs: Vec<OutboundHTLCOutput>,
-	pending_custom_outputs: Vec<CustomOutput>,
+	pending_custom_outputs: HashMap<CustomOutputId, CustomOutput>,
 	holding_cell_htlc_updates: Vec<HTLCUpdateAwaitingACK>,
 	holding_cell_custom_output_updates: Vec<CustomOutputUpdateAwaitingAck>, // TODO(10101): Should we merge with previous field?
 
@@ -1034,7 +1047,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
-			pending_custom_outputs: Vec::new(),
+			pending_custom_outputs: HashMap::new(),
 			holding_cell_htlc_updates: Vec::new(),
 			holding_cell_custom_output_updates: Vec::new(),
 			pending_update_fee: None,
@@ -1368,7 +1381,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
-			pending_custom_outputs: Vec::new(),
+			pending_custom_outputs: HashMap::new(),
 			holding_cell_htlc_updates: Vec::new(),
 			holding_cell_custom_output_updates: Vec::new(),
 			pending_update_fee: None,
@@ -1636,7 +1649,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let mut from_self_custom_output_msat = 0;
 		let mut from_remote_custom_output_msat = 0;
-		for ref custom_output in self.pending_custom_outputs.iter() {
+		let mut local_settlement_profit_msat = 0;
+		for (_, ref custom_output) in self.pending_custom_outputs.iter() {
 			let state_name = match custom_output.state {
 				CustomOutputState::LocalAnnounced => "LocalAnnounced",
 				CustomOutputState::RemoteAnnounced => "RemoteAnnounced",
@@ -1645,12 +1659,15 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::RemoteSettled => "RemoteSettled",
 				CustomOutputState::AwaitingRemoteRevokeToSettle => "AwaitingRemoteRevokeToSettle",
 				CustomOutputState::AwaitingRemovedRemoteRevoke => "AwaitingRemovedRemoteRevoke",
+				CustomOutputState::LocalRemoved {..} => {"LocalRemoved"}
+				CustomOutputState::RemoteRemoved {..} => {"RemoteRemoved"}
 			};
 
 			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
 
 			// Ignoring inbound or outbound
 			// Ignoring `self.opt_anchors()` for now?
+
 
 			let custom_output_in_tx = CustomOutputInCommitment {
 				amount_local_msat: custom_output.amount_local_msat,
@@ -1669,7 +1686,9 @@ impl<Signer: Sign> Channel<Signer> {
 				custom_output.amount_local_msat + custom_output.amount_remote_msat
 			);
 
-			included_custom_outputs.push(custom_output_in_tx);
+			if let CustomOutputState::LocalAnnounced | CustomOutputState::RemoteAnnounced | CustomOutputState::AwaitingRemoteRevoke = custom_output.state {
+				included_custom_outputs.push(custom_output_in_tx);
+			}
 
 			// TODO(10101): subtract amounts from each side
 			match custom_output.state {
@@ -1686,6 +1705,11 @@ impl<Signer: Sign> Channel<Signer> {
 					from_self_custom_output_msat += custom_output.amount_remote_msat;
 					from_remote_custom_output_msat += custom_output.amount_local_msat;
 				}
+				CustomOutputState::LocalRemoved {
+					local_profit
+				}  | CustomOutputState::RemoteRemoved{ local_profit } => {
+					local_settlement_profit_msat += local_profit;
+				}
 				CustomOutputState::AwaitingRemovedRemoteRevoke |
 				CustomOutputState::RemoteSettled |
 				CustomOutputState::Committed |
@@ -1695,13 +1719,13 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 
-		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat - from_self_custom_output_msat) as i64 + value_to_self_msat_offset;
+		let mut value_to_self_msat: i64 = (self.value_to_self_msat - local_htlc_total_msat - from_self_custom_output_msat) as i64 + value_to_self_msat_offset + local_settlement_profit_msat as i64;
 		assert!(value_to_self_msat >= 0);
 		// Note that in case they have several just-awaiting-last-RAA fulfills in-progress (ie
 		// AwaitingRemoteRevokeToRemove or AwaitingRemovedRemoteRevoke) we may have allowed them to
-		// "violate" their reserve value by couting those against it. Thus, we have to convert
+		// "violate" their reserve value by counting those against it. Thus, we have to convert
 		// everything to i64 before subtracting as otherwise we can overflow.
-		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat) as i64 - (remote_htlc_total_msat as i64) - value_to_self_msat_offset - from_remote_custom_output_msat as i64;
+		let mut value_to_remote_msat: i64 = (self.channel_value_satoshis * 1000) as i64 - (self.value_to_self_msat) as i64 - (remote_htlc_total_msat as i64) - value_to_self_msat_offset - from_remote_custom_output_msat as i64 - local_settlement_profit_msat;
 		assert!(value_to_remote_msat >= 0);
 
 		#[cfg(debug_assertions)]
@@ -2562,7 +2586,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	fn get_inbound_pending_custom_output_stats(&self) -> CustomOutputInboundStats {
 		let mut sum_msats = 0;
-		for ref output in self.pending_custom_outputs.iter() {
+		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			sum_msats += output.amount_remote_msat;
 		}
@@ -2575,7 +2599,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	fn get_outbound_pending_custom_output_stats(&self) -> CustomOutputOutboundStats {
 		let mut sum_msats = 0;
-		for ref output in self.pending_custom_outputs.iter() {
+		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			sum_msats += output.amount_local_msat;
 		}
@@ -2649,7 +2673,7 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		balance_msat -= outbound_stats.pending_htlcs_value_msat;
 
-		for ref custom_output in self.pending_custom_outputs.iter() {
+		for (_, ref custom_output) in self.pending_custom_outputs.iter() {
 			match custom_output.state {
 				CustomOutputState::LocalAnnounced => {
 					balance_msat -= custom_output.amount_local_msat;
@@ -2664,10 +2688,11 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::Committed |
 				CustomOutputState::RemoteSettled |
 				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke => {
+				CustomOutputState::AwaitingRemovedRemoteRevoke |
+				CustomOutputState::LocalRemoved { .. } |
+				CustomOutputState::RemoteRemoved { .. } => {
 					unimplemented!("Not used so far")
-				},
-
+				}
 			}
 		}
 
@@ -3077,16 +3102,17 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// TODO(10101): Introduce checks similar to what we see in `update_add_htlc`
 
-		if self.next_counterparty_custom_output_id != msg.custom_output_id {
-			return Err(ChannelError::Close(format!("Remote skipped custom output ID (skipped ID: {})", self.next_counterparty_custom_output_id)));
-		}
+		// TODO(10101): Do we need this check?
+		// if self.next_counterparty_custom_output_id != msg.custom_output_id {
+		// 	return Err(ChannelError::Close(format!("Remote skipped custom output ID (skipped ID: {})", self.next_counterparty_custom_output_id)));
+		// }
 		if msg.cltv_expiry >= 500000000 {
 			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
 		}
 
 		// Now update local state:
 		self.next_counterparty_custom_output_id += 1;
-		self.pending_custom_outputs.push(
+		self.pending_custom_outputs.insert(msg.custom_output_id,
 			CustomOutput {
 				custom_output_id: msg.custom_output_id,
 				amount_local_msat: msg.amount_local_msat,
@@ -3309,7 +3335,7 @@ impl<Signer: Sign> Channel<Signer> {
 				need_commitment = true;
 			}
 		}
-		for custom_output in self.pending_custom_outputs.iter_mut() {
+		for (_, custom_output) in self.pending_custom_outputs.iter_mut() {
 			if let CustomOutputState::RemoteAnnounced = custom_output.state {
 				log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevoke due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
@@ -3494,6 +3520,7 @@ impl<Signer: Sign> Channel<Signer> {
 				update_fee,
 				commitment_signed,
 				update_add_custom_output: Vec::new(),
+				update_remove_custom_output: Vec::new()
 			}, monitor_update)), htlcs_to_fail))
 		} else {
 			Ok((None, Vec::new()))
@@ -3754,7 +3781,8 @@ impl<Signer: Sign> Channel<Signer> {
 							update_fail_malformed_htlcs,
 							update_fee: None,
 							commitment_signed,
-							update_add_custom_output: Vec::new()
+							update_add_custom_output: Vec::new(),
+							update_remove_custom_output: Vec::new()
 						}),
 						finalized_claimed_htlcs,
 						accepted_htlcs: to_forward_infos, failed_htlcs: revoked_htlcs,
@@ -4118,6 +4146,7 @@ impl<Signer: Sign> Channel<Signer> {
 			update_add_htlcs, update_fulfill_htlcs, update_fail_htlcs, update_fail_malformed_htlcs, update_fee,
 			commitment_signed: self.send_commitment_no_state_update(logger).expect("It looks like we failed to re-generate a commitment_signed we had previously sent?").0,
 			update_add_custom_output: Vec::new(),
+			update_remove_custom_output: Vec::new()
 		}
 	}
 
@@ -5872,6 +5901,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn add_custom_output<L: Deref>(
 		&mut self,
+		custom_output_id: CustomOutputId,
 		amount_us_msat: u64,
 		amount_counterparty_msat: u64,
 		cltv_expiry: u32, logger: &L
@@ -5932,9 +5962,10 @@ impl<Signer: Sign> Channel<Signer> {
 			return Ok(None);
 		}
 
-		self.pending_custom_outputs.push(
+		self.pending_custom_outputs.insert(
+			custom_output_id,
 			CustomOutput {
-				custom_output_id: self.next_holder_custom_output_id,
+				custom_output_id,
 				amount_local_msat: amount_us_msat,
 				amount_remote_msat: amount_counterparty_msat,
 				cltv_expiry,
@@ -5944,7 +5975,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		let res = msgs::UpdateAddCustomOutput {
 			channel_id: self.channel_id,
-			custom_output_id: self.next_holder_custom_output_id,
+			custom_output_id,
 			amount_local_msat: amount_us_msat,
 			amount_remote_msat: amount_counterparty_msat,
 			cltv_expiry,
@@ -5953,6 +5984,65 @@ impl<Signer: Sign> Channel<Signer> {
 
 		Ok(Some(res))
 	}
+
+	pub fn remove_custom_output<L: Deref>(
+		&mut self,
+		custom_output_id: CustomOutputId,
+		local_settlement_amount_msat: u64,
+		remote_settlement_amount_msat: u64,
+		logger: &L
+	) -> Result<Option<msgs::UpdateRemoveCustomOutput>, ChannelError> where L::Target: Logger {
+		let custom_output = self.pending_custom_outputs.get(&custom_output_id).ok_or(ChannelError::Ignore("Cannot remove custom output which we don't know about".to_owned()))?;
+
+		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
+			return Err(ChannelError::Ignore("Cannot remove custom output until channel is fully established and we haven't started shutting down".to_owned()));
+		}
+
+
+		if (self.channel_state & (ChannelState::PeerDisconnected as u32)) != 0 {
+			// Note that this should never really happen
+			return Err(ChannelError::Ignore("Cannot remove custom output while disconnected from channel counterparty".to_owned()));
+		}
+
+		// We only build this to run checks based on the _current_ commitment transaction i.e.
+		// before removing the custom output
+		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+
+		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
+			// TODO: should this be a hashmap as well?
+			self.holding_cell_custom_output_updates.push(
+				CustomOutputUpdateAwaitingAck::RemoveCustomOutput {
+					local_amount_msat: local_settlement_amount_msat,
+					remote_amount_msat: remote_settlement_amount_msat,
+				}
+			);
+			return Ok(None);
+		}
+
+
+		self.pending_custom_outputs.insert(custom_output_id,
+			CustomOutput {
+				custom_output_id,
+				amount_local_msat: local_settlement_amount_msat,
+				amount_remote_msat: remote_settlement_amount_msat,
+				cltv_expiry: custom_output.cltv_expiry,
+				state: CustomOutputState::LocalRemoved {
+					local_profit: local_settlement_amount_msat as i64 - custom_output.amount_local_msat as i64,
+				}
+			}
+		);
+
+		let res = msgs::UpdateRemoveCustomOutput {
+			channel_id: self.channel_id,
+			custom_output_id,
+			local_amount_msat: local_settlement_amount_msat,
+			remote_amount_msat: remote_settlement_amount_msat,
+		};
+
+		Ok(Some(res))
+	}
+
 
 	/// Creates a signed commitment transaction to send to the remote peer.
 	/// Always returns a ChannelError::Close if an immediately-preceding (read: the
@@ -6126,15 +6216,26 @@ impl<Signer: Sign> Channel<Signer> {
 
 	pub fn add_custom_output_and_commit<L: Deref>(
 		&mut self,
+		custom_output_id: CustomOutputId,
 		amount_us_msat: u64,
 		amount_counterparty_msat: u64,
 		cltv_expiry: u32,
 		logger: &L
 	) -> Result<Option<(msgs::UpdateAddCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.add_custom_output(amount_us_msat, amount_counterparty_msat, cltv_expiry, logger)? {
+		match self.add_custom_output(custom_output_id, amount_us_msat, amount_counterparty_msat, cltv_expiry, logger)? {
 			Some(update_add_custom_output) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_add_custom_output, commitment_signed, monitor_update)))
+			},
+			None => Ok(None),
+		}
+	}
+
+	pub fn remove_custom_output_and_commit<L: Deref>(&mut self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64, logger: &L) -> Result<Option<(msgs::UpdateRemoveCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger{
+		match self.remove_custom_output(custom_output_id, local_amount, remote_amount, logger)? {
+			Some(update_remove_custom_output) => {
+				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
+				Ok(Some((update_remove_custom_output, commitment_signed, monitor_update)))
 			},
 			None => Ok(None),
 		}
@@ -6453,7 +6554,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 		}
 
 		(self.pending_custom_outputs.len() as u64).write(writer)?;
-		for custom_output in self.pending_custom_outputs.iter() {
+		for (_, custom_output) in self.pending_custom_outputs.iter() {
 			custom_output.custom_output_id.write(writer)?;
 			custom_output.amount_local_msat.write(writer)?;
 			custom_output.amount_remote_msat.write(writer)?;
@@ -6480,6 +6581,14 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 				CustomOutputState::AwaitingRemovedRemoteRevoke => {
 					6u8.write(writer)?;
 				},
+				CustomOutputState::LocalRemoved { local_profit } => {
+					7u8.write(writer)?;
+					(*local_profit).write(writer)?;
+				}
+				CustomOutputState::RemoteRemoved { local_profit } => {
+					8u8.write(writer)?;
+					(*local_profit).write(writer)?;
+				}
 			}
 		}
 
@@ -6516,6 +6625,12 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 					amount_remote_msat.write(writer)?;
 					cltv_expiry.write(writer)?;
 				},
+				CustomOutputUpdateAwaitingAck::RemoveCustomOutput { local_amount_msat, remote_amount_msat } => {
+					1u8.write(writer)?;
+					local_amount_msat.write(writer)?;
+					remote_amount_msat.write(writer)?;
+
+				}
 			}
 		}
 
@@ -6778,6 +6893,8 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				},
 			});
 		}
+		// TODO: implement me
+		let pending_custom_outputs = HashMap::new();
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize * 2));

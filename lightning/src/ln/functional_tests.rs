@@ -600,7 +600,7 @@ fn test_update_fee_vanilla() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			(update_fee.as_ref(), commitment_signed)
 		},
 		_ => panic!("Unexpected event"),
@@ -771,7 +771,7 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			(update_fee.as_ref(), commitment_signed)
 		},
 		_ => panic!("Unexpected event"),
@@ -894,7 +894,7 @@ fn test_add_custom_output() {
 				update_fail_malformed_htlcs: _,
 				ref update_fee,
 				ref commitment_signed,
-				ref update_add_custom_output,
+				ref update_add_custom_output, ref update_remove_custom_output,
 			},
 		} => (update_fee.as_ref(), commitment_signed),
 		_ => panic!("Unexpected event"),
@@ -1032,7 +1032,7 @@ fn test_add_custom_output() {
 		.clone();
 
 	// 2. node1.add_custom_output() (similar to send_payment()?)
-	nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry).unwrap();
+	let custom_output_id = nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry).unwrap();
 	dbg!("Node1 added custom output");
 	check_added_monitors!(nodes[1], 1);
 
@@ -1085,6 +1085,12 @@ fn test_add_custom_output() {
 	// 11. let custom_output_created = node0.get_pending_events()
 	// 12. let custom_output_created = node1.get_pending_events()
 
+	let full_amount = amount_node0_msat + amount_node1_msat;
+	let final_amount_node0_msat = (full_amount) / 2;
+	let final_amount_node1_msat = (full_amount) / 2;
+	nodes[1].node.remove_custom_output(custom_output_id, final_amount_node0_msat, final_amount_node1_msat).unwrap();
+
+
 	claim_payment(&nodes[1], &vec!(&nodes[0])[..], our_payment_preimage);
 
 	send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
@@ -1130,7 +1136,7 @@ fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			(update_fee.as_ref(), commitment_signed)
 		},
 		_ => panic!("Unexpected event"),
@@ -1157,7 +1163,7 @@ fn test_update_fee() {
 	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_0.len(), 1);
 	let (update_msg, commitment_signed) = match events_0[0] {
-			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id:_, updates: msgs::CommitmentUpdate { update_add_htlcs:_, update_fulfill_htlcs:_, update_fail_htlcs:_, update_fail_malformed_htlcs:_, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			(update_fee.as_ref(), commitment_signed)
 		},
 		_ => panic!("Unexpected event"),
@@ -4336,7 +4342,7 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
-		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fulfill_htlcs.len(), 1);
@@ -7374,7 +7380,7 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	assert_eq!(events_3.len(), 1);
 	let update_msg : (msgs::UpdateFailMalformedHTLC, msgs::CommitmentSigned) = {
 		match events_3[0] {
-			MessageSendEvent::UpdateCommitmentOutputs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+			MessageSendEvent::UpdateCommitmentOutputs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert!(update_fulfill_htlcs.is_empty());
 				assert!(update_fail_htlcs.is_empty());
@@ -7924,7 +7930,7 @@ fn test_check_htlc_underpaying() {
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let (update_fail_htlc, commitment_signed) = match events[0] {
-		MessageSendEvent::UpdateCommitmentOutputs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output } } => {
+		MessageSendEvent::UpdateCommitmentOutputs { node_id: _ , updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fulfill_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 1);

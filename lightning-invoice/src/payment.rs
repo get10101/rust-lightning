@@ -146,7 +146,7 @@ use bitcoin_hashes::sha256::Hash as Sha256;
 use crate::prelude::*;
 use lightning::io;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
+use lightning::ln::channelmanager::{ChannelDetails, CustomOutputId, PaymentId, PaymentSendFailure};
 use lightning::ln::msgs::{LightningError, ErrorAction};
 use lightning::routing::gossip::NodeId;
 use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, AddCustomOutputRouteDetails};
@@ -266,7 +266,7 @@ pub trait Payer {
 	/// Adds a custom output over the Lightning Network using the given [`Route`].
 	fn add_custom_output(
 		&self, route_details: AddCustomOutputRouteDetails,
-	) -> Result<(), String>; // TODO(10101): Maybe add a `CustomOutputCreatedId`??
+	) -> Result<CustomOutputId, String>;
 
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;

@@ -466,6 +466,7 @@ macro_rules! impl_writeable_primitive {
 impl_writeable_primitive!(u64, 8);
 impl_writeable_primitive!(u32, 4);
 impl_writeable_primitive!(u16, 2);
+impl_writeable_primitive!(i64, 8);
 
 impl Writeable for u8 {
 	#[inline]
