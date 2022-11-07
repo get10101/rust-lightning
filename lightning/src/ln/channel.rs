@@ -1659,8 +1659,8 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::RemoteSettled => "RemoteSettled",
 				CustomOutputState::AwaitingRemoteRevokeToSettle => "AwaitingRemoteRevokeToSettle",
 				CustomOutputState::AwaitingRemovedRemoteRevoke => "AwaitingRemovedRemoteRevoke",
-				CustomOutputState::LocalRemoved {..} => {"LocalRemoved"}
-				CustomOutputState::RemoteRemoved {..} => {"RemoteRemoved"}
+				CustomOutputState::LocalRemoved {..} => "LocalRemoved",
+				CustomOutputState::RemoteRemoved {..} => "RemoteRemoved",
 			};
 
 			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
@@ -1705,9 +1705,7 @@ impl<Signer: Sign> Channel<Signer> {
 					from_self_custom_output_msat += custom_output.amount_remote_msat;
 					from_remote_custom_output_msat += custom_output.amount_local_msat;
 				}
-				CustomOutputState::LocalRemoved {
-					local_profit
-				}  | CustomOutputState::RemoteRemoved{ local_profit } => {
+				CustomOutputState::LocalRemoved { local_profit } | CustomOutputState::RemoteRemoved { local_profit } => {
 					local_settlement_profit_msat += local_profit;
 				}
 				CustomOutputState::AwaitingRemovedRemoteRevoke |
@@ -2685,12 +2683,10 @@ impl<Signer: Sign> Channel<Signer> {
 					// TODO(10101): Unsure about this one
 					balance_msat -= custom_output.amount_remote_msat;
 				},
-				CustomOutputState::Committed |
-				CustomOutputState::RemoteSettled |
-				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke |
-				CustomOutputState::LocalRemoved { .. } |
-				CustomOutputState::RemoteRemoved { .. } => {
+				CustomOutputState::LocalRemoved { .. } | CustomOutputState::RemoteRemoved { .. } => {
+					// TODO(10101): Assign amounts to corresponding parties
+				},
+				CustomOutputState::Committed | CustomOutputState::RemoteSettled | CustomOutputState::AwaitingRemoteRevokeToSettle | CustomOutputState::AwaitingRemovedRemoteRevoke => {
 					unimplemented!("Not used so far")
 				}
 			}
@@ -3104,7 +3100,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// TODO(10101): Do we need this check?
 		// if self.next_counterparty_custom_output_id != msg.custom_output_id {
-		// 	return Err(ChannelError::Close(format!("Remote skipped custom output ID (skipped ID: {})", self.next_counterparty_custom_output_id)));
+		//	return Err(ChannelError::Close(format!("Remote skipped custom output ID (skipped ID: {})", self.next_counterparty_custom_output_id)));
 		// }
 		if msg.cltv_expiry >= 500000000 {
 			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
@@ -3119,6 +3115,56 @@ impl<Signer: Sign> Channel<Signer> {
 				amount_remote_msat: msg.amount_remote_msat,
 				cltv_expiry: msg.cltv_expiry,
 				state: CustomOutputState::RemoteAnnounced,
+			}
+		);
+
+		Ok(())
+	}
+
+	pub fn update_remove_custom_output<L: Deref>(&mut self, msg: &msgs::UpdateRemoveCustomOutput, logger: &L) -> Result<(), ChannelError>
+	where L::Target: Logger {
+		let msgs::UpdateRemoveCustomOutput {
+			channel_id,
+			custom_output_id,
+			local_amount_msat: local_settlement_amount_msat,
+			remote_amount_msat: remote_settlement_amount_msat
+		} = msg;
+
+		// We can't remove custom outputs after we've sent a shutdown.
+		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if local_sent_shutdown {
+			todo!("Do we have to do something like what `update_add_htlc` does?")
+		}
+
+		// If the remote has sent a shutdown prior to removing this custom output, then they are in violation of the spec (what spec?).
+		let remote_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::RemoteShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
+		if remote_sent_shutdown {
+			return Err(ChannelError::Close("Got remove custom output message when channel was not in an operational state".to_owned()));
+		}
+		if self.channel_state & (ChannelState::PeerDisconnected as u32) == ChannelState::PeerDisconnected as u32 {
+			return Err(ChannelError::Close("Peer sent update_remove_custom_output when we needed a channel_reestablish".to_owned()));
+		}
+
+		let custom_output = self.pending_custom_outputs
+			.get(&custom_output_id)
+			.ok_or(ChannelError::Warn("Remote tried to remove unknown custom output".to_owned()))?;
+
+		if (local_settlement_amount_msat + remote_settlement_amount_msat) != (custom_output.amount_local_msat + custom_output.amount_remote_msat) {
+			return Err(ChannelError::Close(
+				"Remote side tried to remove custom output with total settlement value different to the value of the custom output".to_owned()
+			));
+		}
+
+		// Now update local state:
+		self.pending_custom_outputs.insert(msg.custom_output_id,
+			CustomOutput {
+				custom_output_id: custom_output.custom_output_id,
+				amount_local_msat: custom_output.amount_local_msat,
+				amount_remote_msat: custom_output.amount_remote_msat,
+				cltv_expiry: custom_output.cltv_expiry,
+				state: CustomOutputState::RemoteRemoved {
+					local_profit: (*local_settlement_amount_msat as i64) - (custom_output.amount_local_msat as i64)
+				},
 			}
 		);
 
@@ -3212,7 +3258,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, self.channel_value_satoshis);
+			let sighash = dbg!(bitcoin_tx).get_sighash_all(&funding_script, self.channel_value_satoshis);
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),

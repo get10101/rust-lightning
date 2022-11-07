@@ -1005,7 +1005,7 @@ fn test_add_custom_output() {
 
 	// 1. node1 calls get_route()
 
-	let amount_node1_msat = 1_000_567;
+	let amount_node1_msat = 1_000_568;
 	let amount_node0_msat = 234_000;
 
 	// TODO: This information should be acquired differently i.e using the new APIs in `lightning-invoice`
@@ -1039,7 +1039,7 @@ fn test_add_custom_output() {
 	// 3. let (update_fee, commitment_signed) = node1.get_msg_events()
 	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
-	let (update_fee, update_add_custom_output, commitment_signed) = match events_1.as_slice() {
+	let (_update_fee, update_add_custom_output, commitment_signed) = match events_1.as_slice() {
 		[MessageSendEvent::UpdateCommitmentOutputs {
 			updates:
 			msgs::CommitmentUpdate {
@@ -1085,11 +1085,62 @@ fn test_add_custom_output() {
 	// 11. let custom_output_created = node0.get_pending_events()
 	// 12. let custom_output_created = node1.get_pending_events()
 
+	dbg!("Custom output added");
+
+	// Let's remove the custom output collaboratively
+
 	let full_amount = amount_node0_msat + amount_node1_msat;
 	let final_amount_node0_msat = (full_amount) / 2;
 	let final_amount_node1_msat = (full_amount) / 2;
 	nodes[1].node.remove_custom_output(custom_output_id, final_amount_node0_msat, final_amount_node1_msat).unwrap();
 
+	dbg!("Node 1 called `remove_custom_outputs`");
+
+	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_1.len(), 1);
+	let (_update_fee, update_remove_custom_output, commitment_signed) = match events_1.as_slice() {
+		[MessageSendEvent::UpdateCommitmentOutputs {
+			updates:
+			msgs::CommitmentUpdate {
+				ref update_fee,
+				ref commitment_signed,
+				ref update_remove_custom_output,
+				..
+			},
+			..
+		}] => (update_fee.as_ref(), update_remove_custom_output, commitment_signed),
+		_ => panic!("Unexpected event"),
+	};
+
+	dbg!("Node1 got msg events to remove custom output");
+
+	nodes[0]
+		.node
+		.handle_update_remove_custom_output(&nodes[1].node.get_our_node_id(), &update_remove_custom_output[0]);
+
+	nodes[0]
+		.node
+		.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+	dbg!("Node0 handled commitment after remove signed");
+	check_added_monitors!(nodes[0], 1);
+
+	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke);
+	dbg!("Node1 handled revoke and ack for remove");
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
+	dbg!("Node1 handled commitment signed for remove");
+	check_added_monitors!(nodes[1], 1);
+
+	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+
+	// 10. node0.handle_revoke_and_ack(revoke_and_ack)
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke);
+	check_added_monitors!(nodes[0], 1);
+
+	dbg!("Custom output removed");
 
 	claim_payment(&nodes[1], &vec!(&nodes[0])[..], our_payment_preimage);
 

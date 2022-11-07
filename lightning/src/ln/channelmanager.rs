@@ -2859,11 +2859,15 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64) -> Result<(), RemoveCustomOutputError> {
-		let guard = self.custom_outputs.lock().unwrap();
-		let custom_output = guard.get(&custom_output_id).ok_or(RemoveCustomOutputError::CustomOutputNotFound)?;
-
 		let mut channel_lock = self.channel_state.lock().unwrap();
+
+		let mut custom_outputs = self.custom_outputs.lock().unwrap();
+		let custom_output = custom_outputs.get(&custom_output_id).ok_or(RemoveCustomOutputError::CustomOutputNotFound)?;
+		// let custom_output: CustomOutput = todo!();
+
+
 		let channel_id = custom_output.channel_id;
+		// let channel_id = todo!();
 
 		if custom_output.local_amount_msat + custom_output.remote_amount_msat != local_amount + remote_amount {
 			return Err(RemoveCustomOutputError::InvalidAmounts)
@@ -2889,7 +2893,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			{
 				Ok(Some(res)) => res,
 				Ok(None) => {
-					self.custom_outputs.lock().unwrap().remove(&custom_output_id);
+					custom_outputs.remove(&custom_output_id);
 					// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
 					// should be used like when adding HTLCs: if the channel reports that it is "in
 					// the middle of something" and it should not be modified, we do nothing. The
@@ -2905,7 +2909,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 					match handle_error!(self, Result::<(), _>::Err(e), pk_counterparty) {
 						Ok(_) => unreachable!(),
-						Err(e) => {
+						Err(_) => {
 							return Err(RemoveCustomOutputError::ChannelNotAvailable);
 						},
 					}
@@ -2918,7 +2922,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			   handle_monitor_update_res!(self, update_err, channel_holder, channel,
 					  RAACommitmentOrder::CommitmentFirst, false, true))
 		{
-			(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => return Err(RemoveCustomOutputError::ChannelFailed),
+			(ChannelMonitorUpdateStatus::PermanentFailure, Err(_)) => return Err(RemoveCustomOutputError::ChannelFailed),
 			(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
 				// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
 				// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
@@ -2956,7 +2960,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		});
 
 
-		self.custom_outputs.lock().unwrap().remove(&custom_output_id);
+		custom_outputs.remove(&custom_output_id);
 
 		Ok(())
 	}
@@ -5142,7 +5146,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				try_chan_entry!(self, channel.get_mut().remove_custom_output(msg.custom_output_id, msg.local_amount_msat, msg.remote_amount_msat, &self.logger), channel_state, channel);
+				try_chan_entry!(self, channel.get_mut().update_remove_custom_output(msg, &self.logger), channel_state, channel);
 			},
 			hash_map::Entry::Vacant(_) => todo!(),
 		}

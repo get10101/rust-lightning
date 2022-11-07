@@ -675,9 +675,9 @@ fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 		Some(NetAddress::IPv4{addr: [0, _, _, _], port: _}) => None,
 		// For IPv4 range 100.64.0.0 - 100.127.255.255 (100.64/10)
 		Some(NetAddress::IPv4{addr: [100, 64..=127, _, _], port: _}) => None,
-		// For IPv4 range  	127.0.0.0 - 127.255.255.255 (127/8)
+		// For IPv4 range	127.0.0.0 - 127.255.255.255 (127/8)
 		Some(NetAddress::IPv4{addr: [127, _, _, _], port: _}) => None,
-		// For IPv4 range  	169.254.0.0 - 169.254.255.255 (169.254/16)
+		// For IPv4 range	169.254.0.0 - 169.254.255.255 (169.254/16)
 		Some(NetAddress::IPv4{addr: [169, 254, _, _], port: _}) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
 		Some(NetAddress::IPv4{addr: [172, 16..=31, _, _], port: _}) => None,
@@ -1656,10 +1656,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
 					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
-						log_debug!(self.logger, "Handling UpdateCommitmentOutputs event in peer_handler for node {} with {} htlc adds, {} custom adds, {} fulfills, {} fails for channel {}",
+						log_debug!(self.logger, "Handling UpdateCommitmentOutputs event in peer_handler for node {} with {} htlc adds, {} custom adds, {} custom removals, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),
 								update_add_custom_output.len(),
+								update_remove_custom_output.len(),
 								update_fulfill_htlcs.len(),
 								update_fail_htlcs.len(),
 								log_bytes!(commitment_signed.channel_id));
