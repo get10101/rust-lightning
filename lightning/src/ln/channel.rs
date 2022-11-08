@@ -7002,6 +7002,18 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 					4 => CustomOutputState::RemoteSettled,
 					5 => CustomOutputState::AwaitingRemoteRevokeToSettle,
 					6 => CustomOutputState::AwaitingRemovedRemoteRevoke,
+					7 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::LocalRemoved { local_profit }
+					}
+					8 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::RemoteRemoved { local_profit }
+					}
+					9 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit }
+					}
 					_ => return Err(DecodeError::InvalidValue),
 				},
 			});
