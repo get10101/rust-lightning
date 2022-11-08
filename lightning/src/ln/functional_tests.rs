@@ -1090,11 +1090,10 @@ fn test_add_custom_output() {
 	// Let's remove the custom output collaboratively
 
 	let full_amount = amount_node0_msat + amount_node1_msat;
-	let final_amount_node0_msat = (full_amount) / 2;
-	let final_amount_node1_msat = (full_amount) / 2;
-	nodes[1].node.remove_custom_output(custom_output_id, final_amount_node0_msat, final_amount_node1_msat).unwrap();
+	nodes[1].node.remove_custom_output(custom_output_id, full_amount / 2, full_amount / 2).unwrap();
 
 	dbg!("Node 1 called `remove_custom_outputs`");
+	check_added_monitors!(nodes[1], 1);
 
 	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);

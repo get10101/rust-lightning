@@ -2943,7 +2943,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			_ => unreachable!(),
 		}
 
-		log_debug!(self.logger, "Adding custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
+		log_debug!(self.logger, "Removing custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
 
 		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 			node_id: pk_counterparty,

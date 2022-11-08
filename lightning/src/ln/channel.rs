@@ -232,9 +232,11 @@ struct CustomOutput {
 }
 
 // TODO(10101): The variants are tentative
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 enum CustomOutputState {
+	/// Added by us and included in a commitment_signed
 	LocalAnnounced, // TODO(10101): Might need to add `Box<msgs::OnionPacket>` like for `OutboundHTLCState::LocalAnnounced`
+	/// Added by the remote node
 	RemoteAnnounced,
 	// we received RemoteAnnounced and are waiting for the remote to announce the RAA to us.
 	AwaitingRemoteRevoke,
@@ -245,6 +247,10 @@ enum CustomOutputState {
 		local_profit: i64
 	},
 	Committed,
+	// we received RemoteRemoved and are waiting for the remote to announce the RAA to us.
+	AwaitingRemoteRemoveToRevoke  {
+		local_profit: i64
+	},
 	// TODO: I think this can be removed
 	RemoteSettled,
 	AwaitingRemoteRevokeToSettle,
@@ -1661,6 +1667,7 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::AwaitingRemovedRemoteRevoke => "AwaitingRemovedRemoteRevoke",
 				CustomOutputState::LocalRemoved {..} => "LocalRemoved",
 				CustomOutputState::RemoteRemoved {..} => "RemoteRemoved",
+				CustomOutputState::AwaitingRemoteRemoveToRevoke { .. } => {"AwaitingRemoteRemoveToRevoke"}
 			};
 
 			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
@@ -1678,16 +1685,16 @@ impl<Signer: Sign> Channel<Signer> {
 			// let custom_output_tx_fee = feerate_per_kw as u64 * custom_output_tx_weight / 1000;
 
 			// assume custom output is > dust limit + associated tx fee, therefore always include
-			log_trace!(
-				logger,
-				"   ...including {} custom output {} with value {}",
-				state_name,
-				custom_output.custom_output_id,
-				custom_output.local_amount_msat + custom_output.remote_amount_msat
-			);
 
 			if let CustomOutputState::LocalAnnounced | CustomOutputState::RemoteAnnounced | CustomOutputState::AwaitingRemoteRevoke = custom_output.state {
 				included_custom_outputs.push(custom_output_in_tx);
+				log_trace!(
+					logger,
+					"   ...including {} custom output {} with value {}",
+					state_name,
+					custom_output.custom_output_id,
+					custom_output.local_amount_msat + custom_output.remote_amount_msat
+				);
 			}
 
 			// TODO(10101): subtract amounts from each side
@@ -1704,7 +1711,8 @@ impl<Signer: Sign> Channel<Signer> {
 					from_self_custom_output_msat += custom_output.local_amount_msat;
 					from_remote_custom_output_msat += custom_output.remote_amount_msat;
 				}
-				CustomOutputState::LocalRemoved { local_profit } | CustomOutputState::RemoteRemoved { local_profit } => {
+				CustomOutputState::LocalRemoved { local_profit } | CustomOutputState::RemoteRemoved { local_profit } |
+				CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
 					local_settlement_profit_msat += local_profit;
 				}
 				CustomOutputState::AwaitingRemovedRemoteRevoke |
@@ -2583,10 +2591,33 @@ impl<Signer: Sign> Channel<Signer> {
 
 	fn get_inbound_pending_custom_output_stats(&self) -> CustomOutputInboundStats {
 		let mut sum_msats = 0;
+		let mut sum_profit = 0;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
+			match output.state {
+				CustomOutputState::LocalAnnounced |
+				CustomOutputState::RemoteAnnounced |
+				CustomOutputState::AwaitingRemoteRevoke => {
+					sum_msats += output.remote_amount_msat;
+				}
+				CustomOutputState::LocalRemoved { local_profit } |
+				CustomOutputState::RemoteRemoved { local_profit } | CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
+					sum_profit += local_profit * -1;
+				}
+				CustomOutputState::Committed |
+				CustomOutputState::RemoteSettled |
+				CustomOutputState::AwaitingRemoteRevokeToSettle |
+				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }
+			}
 			sum_msats += output.remote_amount_msat;
 		}
+
+		let sum_msats = if sum_profit > 0 {
+			sum_msats.checked_add(sum_profit as u64).unwrap_or_default()
+		} else {
+			sum_msats.checked_sub((sum_profit * -1) as u64).unwrap_or_default()
+		};
+
 		CustomOutputInboundStats {
 			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
 			pending_custom_outputs_msat: sum_msats
@@ -2596,10 +2627,32 @@ impl<Signer: Sign> Channel<Signer> {
 
 	fn get_outbound_pending_custom_output_stats(&self) -> CustomOutputOutboundStats {
 		let mut sum_msats = 0;
+		let mut sum_profit = 0;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
-			sum_msats += output.local_amount_msat;
+			match output.state {
+				CustomOutputState::LocalAnnounced |
+				CustomOutputState::RemoteAnnounced |
+				CustomOutputState::AwaitingRemoteRevoke => {
+					sum_msats += output.local_amount_msat;
+				}
+				CustomOutputState::LocalRemoved { local_profit } |
+				CustomOutputState::RemoteRemoved { local_profit } | CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
+					sum_profit += local_profit;
+				}
+				CustomOutputState::Committed |
+				CustomOutputState::RemoteSettled |
+				CustomOutputState::AwaitingRemoteRevokeToSettle |
+				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }
+			}
 		}
+
+		let sum_msats = if sum_profit > 0 {
+			sum_msats.checked_add(sum_profit as u64).unwrap_or_default()
+		} else {
+			sum_msats.checked_sub((sum_profit * -1) as u64).unwrap_or_default()
+		};
+
 		CustomOutputOutboundStats {
 			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
 			pending_custom_outputs_msat: sum_msats
@@ -2669,6 +2722,7 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 		balance_msat -= outbound_stats.pending_htlcs_value_msat;
+		let mut sum_profit = 0;
 
 		for (_, ref custom_output) in self.pending_custom_outputs.iter() {
 			match custom_output.state {
@@ -2681,14 +2735,22 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::AwaitingRemoteRevoke => {
 					balance_msat -= custom_output.remote_amount_msat;
 				},
-				CustomOutputState::LocalRemoved { .. } | CustomOutputState::RemoteRemoved { .. } => {
-					todo!("Assign amounts to corresponding parties")
+				CustomOutputState::LocalRemoved { local_profit } | CustomOutputState::RemoteRemoved { local_profit } | CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
+					sum_profit += local_profit;
 				},
 				CustomOutputState::Committed | CustomOutputState::RemoteSettled | CustomOutputState::AwaitingRemoteRevokeToSettle | CustomOutputState::AwaitingRemovedRemoteRevoke => {
 					unimplemented!("Not used so far")
 				}
 			}
 		}
+
+
+		let balance_msat = if sum_profit > 0 {
+			balance_msat.checked_add(sum_profit as u64).unwrap_or_default()
+		} else {
+			balance_msat.checked_sub((sum_profit * -1) as u64).unwrap_or_default()
+		};
+
 
 		let outbound_capacity_msat = cmp::max(self.value_to_self_msat as i64
 				- outbound_stats.pending_htlcs_value_msat as i64
@@ -3373,11 +3435,22 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 		}
 		for (_, custom_output) in self.pending_custom_outputs.iter_mut() {
-			if let CustomOutputState::RemoteAnnounced = custom_output.state {
-				log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevoke due to commitment_signed in channel {}.",
+			match &custom_output.state {
+				CustomOutputState::RemoteAnnounced => {
+					log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevoke due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
-				custom_output.state = CustomOutputState::AwaitingRemoteRevoke;
-				need_commitment = true;
+					custom_output.state = CustomOutputState::AwaitingRemoteRevoke;
+					need_commitment = true;
+				}
+				CustomOutputState::RemoteRemoved { local_profit } => {
+					log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
+					custom_output.custom_output_id, log_bytes!(self.channel_id));
+					custom_output.state = CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit: *local_profit};
+					need_commitment = true;
+				}
+				_ => {
+					// ignored
+				}
 			}
 			// TODO(10101): we might need this because we merged inbound and outbound
 			// if let &mut CustomOutputState::RemoteSettled = &mut custom_output.state {
@@ -6626,6 +6699,9 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 					8u8.write(writer)?;
 					(*local_profit).write(writer)?;
 				}
+				CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
+					9u8.write(writer)?;
+					(*local_profit).write(writer)?;}
 			}
 		}
 
