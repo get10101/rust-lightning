@@ -1671,6 +1671,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						for msg in update_add_custom_output {
 							self.enqueue_message(&mut *peer, msg);
 						}
+						for msg in update_remove_custom_output {
+							self.enqueue_message(&mut *peer, msg);
+						}
 						for msg in update_fulfill_htlcs {
 							self.enqueue_message(&mut *peer, msg);
 						}

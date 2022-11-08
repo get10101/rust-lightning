@@ -14,7 +14,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use crate::ln::channelmanager::ChannelDetails;
+use crate::ln::channelmanager::{ChannelDetails, CustomOutputId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -90,6 +90,16 @@ pub struct AddCustomOutputRouteDetails {
 	pub amount_counterparty_msat: u64,
 	/// The CLTV expiry of the custom output.
 	pub cltv_expiry: u32
+}
+
+/// Details needed to remove a custom output with peer.
+pub struct RemoveCustomOutputDetails {
+	/// The id of the custom output which is mean to be removed
+	pub custom_output_id: CustomOutputId,
+	/// The amount that the local node (we) provide for the custom output.
+	pub local_amount_msats: u64,
+	/// The amount that our counterparty (the listener) provides for the custom output.
+	pub remote_amount_msats: u64,
 }
 
 pub(crate) trait RoutePath {

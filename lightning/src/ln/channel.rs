@@ -221,6 +221,7 @@ struct OutboundHTLCOutput {
 	source: HTLCSource,
 }
 
+#[derive(Debug)]
 struct CustomOutput {
 	custom_output_id: CustomOutputId,
 	/// Initial amount provided by local node
@@ -2609,7 +2610,6 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::AwaitingRemoteRevokeToSettle |
 				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }
 			}
-			sum_msats += output.remote_amount_msat;
 		}
 
 		let sum_msats = if sum_profit > 0 {
@@ -3311,7 +3311,7 @@ impl<Signer: Sign> Channel<Signer> {
 		let commitment_txid = {
 			let trusted_tx = commitment_stats.tx.trust();
 			let bitcoin_tx = trusted_tx.built_transaction();
-			let sighash = dbg!(bitcoin_tx).get_sighash_all(&funding_script, self.channel_value_satoshis);
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, self.channel_value_satoshis);
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),

@@ -200,7 +200,10 @@ pub struct CustomOutputId(pub [u8; 32]);
 impl Display for CustomOutputId {
 
 	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-		std::fmt::Display::fmt(&hex::encode(&self.0), f)
+		for v in &self.0 {
+			write!(f, "{:x?}", v)?;
+		}
+		Ok(())
 	}
 }
 
@@ -1268,14 +1271,22 @@ pub enum PaymentSendFailure {
 	},
 }
 
-#[derive(Debug)]
+/// An error returned if removing a custom output failed
+#[derive(Clone, Debug)]
 pub enum RemoveCustomOutputError {
+	/// Custom output was not found
 	CustomOutputNotFound,
+	/// Channel to remove custom output from was not found
 	ChannelNotFound,
+	/// Channel already closed
 	ChannelClosed,
+	/// Amounts provided do not add up
 	InvalidAmounts,
+	/// Channel currently not available
 	ChannelNotAvailable,
+	/// Channel is dead
 	ChannelFailed,
+	/// Somethingsomething monitor in progress
 	MonitorInProgress,
 }
 
@@ -2858,6 +2869,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(custom_output_id)
 	}
 
+	/// Remove custom output from channel
 	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64) -> Result<(), RemoveCustomOutputError> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 
