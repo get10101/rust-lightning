@@ -517,6 +517,7 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
+#[derive(Debug)]
 struct CustomOutput {
 	channel_id: [u8;32],
 	short_channel_id: u64,
@@ -6934,6 +6935,13 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
+impl_writeable_tlv_based!(CustomOutput, {
+	(0, channel_id, required),
+	(2, short_channel_id, required),
+	(4, local_amount_msat, required),
+	(6, remote_amount_msat, required),
+});
+
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(0, Legacy) => {
 		(0, session_privs, required),
@@ -7028,6 +7036,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+		let custom_outputs = self.custom_outputs.lock().unwrap();
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
@@ -7090,6 +7099,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 				_ => {},
 			}
 		}
+
+		(custom_outputs.len() as u64).write(writer)?;
+		for (id, custom_output) in custom_outputs.iter() {
+			id.write(writer)?;
+			custom_output.write(writer)?;
+		}
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(3, pending_outbound_payments, required),
@@ -7097,6 +7113,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
+			// TODO: is this needed?
+			(13, custom_outputs, required)
 		});
 
 		Ok(())
@@ -7243,6 +7261,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
+		// TODO: load custom outputs in channel. Right now, when restarting the node, the custom outputs are gone.
 		for _ in 0..channel_count {
 			let mut channel: Channel<Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
@@ -7398,6 +7417,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				session_privs: [session_priv].iter().cloned().collect()
 			};
 			if pending_outbound_payments_compat.insert(PaymentId(session_priv), payment).is_some() {
+				return Err(DecodeError::InvalidValue)
+			};
+		}
+
+		let custom_outputs_count: u64 = Readable::read(reader)?;
+		let mut custom_outputs: HashMap<CustomOutputId, CustomOutput> =
+			HashMap::with_capacity(cmp::min(custom_outputs_count as usize, MAX_ALLOC_SIZE/32));
+		for _ in 0..custom_outputs_count {
+			if custom_outputs.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
 				return Err(DecodeError::InvalidValue)
 			};
 		}
@@ -7610,8 +7638,6 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
-		// TODO: implement me!
-		let custom_outputs = HashMap::new();
 
 		let channel_manager = ChannelManager {
 			genesis_hash,
@@ -7632,6 +7658,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
 			custom_outputs: Mutex::new(custom_outputs),
+
 			forward_htlcs: Mutex::new(forward_htlcs),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
 			id_to_peer: Mutex::new(id_to_peer),
