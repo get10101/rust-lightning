@@ -6987,9 +6987,9 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 		}
 
 		let pending_custom_output_count: u64 = Readable::read(reader)?;
-		let mut pending_custom_outputs = Vec::with_capacity(pending_custom_output_count as usize);
+		let mut pending_custom_outputs_vec = Vec::with_capacity(pending_custom_output_count as usize);
 		for _ in 0..pending_custom_output_count {
-			pending_custom_outputs.push(CustomOutput {
+			pending_custom_outputs_vec.push(CustomOutput {
 				custom_output_id: Readable::read(reader)?,
 				local_amount_msat: Readable::read(reader)?,
 				remote_amount_msat: Readable::read(reader)?,
@@ -7018,8 +7018,11 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				},
 			});
 		}
-		// TODO: implement me
-		let pending_custom_outputs = HashMap::new();
+
+		let mut pending_custom_outputs = HashMap::new();
+		for co in pending_custom_outputs_vec.into_iter() {
+			pending_custom_outputs.insert(co.custom_output_id, co);
+		}
 
 		let holding_cell_htlc_update_count: u64 = Readable::read(reader)?;
 		let mut holding_cell_htlc_updates = Vec::with_capacity(cmp::min(holding_cell_htlc_update_count as usize, OUR_MAX_HTLCS as usize * 2));
