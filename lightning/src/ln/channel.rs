@@ -229,6 +229,7 @@ struct CustomOutput {
 	/// Initial amount provided by remote node
 	remote_amount_msat: u64,
 	cltv_expiry: u32,
+	script: Script,
 	state: CustomOutputState,
 }
 
@@ -1683,6 +1684,7 @@ impl<Signer: Sign> Channel<Signer> {
 				amount_local_msat: custom_output.local_amount_msat,
 				amount_remote_msat: custom_output.remote_amount_msat,
 				cltv_expiry: custom_output.cltv_expiry,
+				script: custom_output.script.clone(),
 				transaction_output_index: None,
 			};
 			// let custom_output_tx_fee = feerate_per_kw as u64 * custom_output_tx_weight / 1000;
@@ -3131,7 +3133,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn update_add_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, _logger: &L) -> Result<(), ChannelError>
+	pub fn update_add_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script, _logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
@@ -3176,6 +3178,7 @@ impl<Signer: Sign> Channel<Signer> {
 				local_amount_msat,
 				remote_amount_msat,
 				cltv_expiry,
+				script,
 				state: CustomOutputState::RemoteAnnounced,
 			}
 		);
@@ -3217,6 +3220,7 @@ impl<Signer: Sign> Channel<Signer> {
 				local_amount_msat: custom_output.local_amount_msat,
 				remote_amount_msat: custom_output.remote_amount_msat,
 				cltv_expiry: custom_output.cltv_expiry,
+				script: custom_output.script.clone(),
 				state: CustomOutputState::RemoteRemoved {
 					local_profit: (local_settlement_amount_msat as i64) - (custom_output.local_amount_msat as i64)
 				},
@@ -6016,7 +6020,9 @@ impl<Signer: Sign> Channel<Signer> {
 		custom_output_id: CustomOutputId,
 		local_amount_msat: u64,
 		remote_amount_msat: u64,
-		cltv_expiry: u32, logger: &L
+		cltv_expiry: u32,
+		script: Script,
+		logger: &L
 	) -> Result<Option<msgs::UpdateAddCustomOutput>, ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32 | BOTH_SIDES_SHUTDOWN_MASK)) != (ChannelState::ChannelFunded as u32) {
 			return Err(ChannelError::Ignore("Cannot add custom output until channel is fully established and we haven't started shutting down".to_owned()));
@@ -6081,6 +6087,7 @@ impl<Signer: Sign> Channel<Signer> {
 				local_amount_msat,
 				remote_amount_msat,
 				cltv_expiry,
+				script: script.clone(),
 				state: CustomOutputState::LocalAnnounced
 			}
 		);
@@ -6091,6 +6098,7 @@ impl<Signer: Sign> Channel<Signer> {
 			sender_amount_msat: local_amount_msat,
 			receiver_amount_msat: remote_amount_msat,
 			cltv_expiry,
+			script,
 		};
 		self.next_holder_custom_output_id += 1;
 
@@ -6139,6 +6147,7 @@ impl<Signer: Sign> Channel<Signer> {
 				local_amount_msat: local_settlement_amount_msat,
 				remote_amount_msat: remote_settlement_amount_msat,
 				cltv_expiry: custom_output.cltv_expiry,
+				script: custom_output.script.clone(),
 				state: CustomOutputState::LocalRemoved {
 					local_profit: local_settlement_amount_msat as i64 - custom_output.local_amount_msat as i64,
 				}
@@ -6332,9 +6341,10 @@ impl<Signer: Sign> Channel<Signer> {
 		amount_us_msat: u64,
 		amount_counterparty_msat: u64,
 		cltv_expiry: u32,
+		script: Script,
 		logger: &L
 	) -> Result<Option<(msgs::UpdateAddCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
-		match self.add_custom_output(custom_output_id, amount_us_msat, amount_counterparty_msat, cltv_expiry, logger)? {
+		match self.add_custom_output(custom_output_id, amount_us_msat, amount_counterparty_msat, cltv_expiry, script, logger)? {
 			Some(update_add_custom_output) => {
 				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_add_custom_output, commitment_signed, monitor_update)))
@@ -6996,6 +7006,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				local_amount_msat: Readable::read(reader)?,
 				remote_amount_msat: Readable::read(reader)?,
 				cltv_expiry: Readable::read(reader)?,
+				script: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					0 => CustomOutputState::LocalAnnounced,
 					1 => CustomOutputState::RemoteAnnounced,

@@ -5,6 +5,7 @@ use crate::payment::{InFlightHtlcs, Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
+use bitcoin::Script;
 use bitcoin_hashes::{Hash, sha256};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -660,11 +661,11 @@ where
 	}
 
 	fn add_custom_output(
-		&self, route_details: AddCustomOutputRouteDetails,
+		&self, route_details: AddCustomOutputRouteDetails, script: Script
 	) -> Result<CustomOutputId, String> {
 		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, local_amount_msats: amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
 
-		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry)
+		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry, script)
 	}
 
 	fn remove_custom_output(

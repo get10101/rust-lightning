@@ -1032,7 +1032,8 @@ fn test_add_custom_output() {
 		.clone();
 
 	// 2. node1.add_custom_output() (similar to send_payment()?)
-	let custom_output_id = nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry).unwrap();
+	let custom_output_script = Script::new();
+	let custom_output_id = nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry, custom_output_script).unwrap();
 	dbg!("Node1 added custom output");
 	check_added_monitors!(nodes[1], 1);
 

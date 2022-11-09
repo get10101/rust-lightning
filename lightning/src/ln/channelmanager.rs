@@ -32,7 +32,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::{LockTime, secp256k1, Sequence};
+use bitcoin::{LockTime, secp256k1, Sequence, Script};
 
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
@@ -523,6 +523,7 @@ struct CustomOutput {
 	short_channel_id: u64,
 	local_amount_msat: u64,
 	remote_amount_msat: u64,
+	script: Script
 }
 
 impl PendingOutboundPayment {
@@ -2746,7 +2747,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		pk_counterparty: PublicKey,
 		local_amount_msat: u64,
 		remote_amount_msat: u64,
-		cltv_expiry: u32
+		cltv_expiry: u32,
+		script: Script,
 	) -> Result<CustomOutputId, String>	{
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_id = channel_lock
@@ -2785,6 +2787,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				local_amount_msat,
 				remote_amount_msat,
 				cltv_expiry,
+				script.clone(),
 				&self.logger
 			)
 		{
@@ -2794,7 +2797,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					channel_id,
 					short_channel_id,
 					local_amount_msat,
-					remote_amount_msat
+					remote_amount_msat,
+					script,
 				});
 				// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
 				// should be used like when adding HTLCs: if the channel reports that it is "in
@@ -2865,7 +2869,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			channel_id,
 			short_channel_id,
 			local_amount_msat,
-			remote_amount_msat
+			remote_amount_msat,
+			script,
 		});
 		Ok(custom_output_id)
 	}
@@ -5132,7 +5137,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
-	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_holder = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_holder;
 
@@ -5141,7 +5146,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
 				}
-				try_chan_entry!(self, channel.get_mut().update_add_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, &self.logger), channel_state, channel);
+				try_chan_entry!(self, channel.get_mut().update_add_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, &self.logger), channel_state, channel);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
 		}
@@ -6348,12 +6353,12 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	fn handle_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let msgs::UpdateAddCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat, cltv_expiry } = *msg;
+		let msgs::UpdateAddCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat, cltv_expiry, script } = msg.clone();
 
 		let local_amount_msat = receiver_amount_msat;
 		let remote_amount_msat = sender_amount_msat;
 
-		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry), *counterparty_node_id);
+		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script), *counterparty_node_id);
 	}
 
 	fn handle_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateRemoveCustomOutput) {
@@ -6940,6 +6945,7 @@ impl_writeable_tlv_based!(CustomOutput, {
 	(2, short_channel_id, required),
 	(4, local_amount_msat, required),
 	(6, remote_amount_msat, required),
+	(8, script, required),
 });
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,

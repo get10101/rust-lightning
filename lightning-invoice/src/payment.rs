@@ -142,6 +142,7 @@ use crate::Invoice;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::Script;
 
 use crate::prelude::*;
 use lightning::io;
@@ -265,7 +266,7 @@ pub trait Payer {
 
 	/// Adds a custom output over the Lightning Network using the given [`Route`].
 	fn add_custom_output(
-		&self, route_details: AddCustomOutputRouteDetails,
+		&self, route_details: AddCustomOutputRouteDetails, script: Script
 	) -> Result<CustomOutputId, String>;
 
 	/// Removes a custom output with the provided values.
@@ -465,7 +466,7 @@ where
 	/// TODO(10101): Docs
 	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
 	pub fn add_custom_output(
-		&self, pubkey: PublicKey, amount_local_msats: u64, amount_remote_msats: u64, final_cltv_expiry_delta: u32
+		&self, pubkey: PublicKey, amount_local_msats: u64, amount_remote_msats: u64, final_cltv_expiry_delta: u32, script: Script
 	) -> Result<CustomOutputId, PaymentError> {
 		// TODO: We might have more than one channel with the peer identified by the
 		// `pubkey` argument. We will need to use a heuristic to select a channel among all
@@ -490,7 +491,7 @@ where
 			channel_details,
 		).map_err(|e| PaymentError::Routing(e))?;
 
-		let custom_output_id = self.payer.add_custom_output(route_details).map_err(PaymentError::CreatingCustomOutput)?;
+		let custom_output_id = self.payer.add_custom_output(route_details, script).map_err(PaymentError::CreatingCustomOutput)?;
 
 		Ok(custom_output_id)
 	}
@@ -2234,7 +2235,7 @@ fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u6
 		}
 
 		fn add_custom_output(
-			&self, _route_details: AddCustomOutputRouteDetails,
+			&self, _route_details: AddCustomOutputRouteDetails, _script: Script
 		) -> Result<CustomOutputId, String> {
 			todo!()
 		}

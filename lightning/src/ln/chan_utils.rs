@@ -576,6 +576,8 @@ pub struct CustomOutputInCommitment {
 	/// This is set to [`None`] until all the outputs of the commitment transaction are ordered.
 	/// (I hate this, but we are just following the existing patterns of this library).
 	pub transaction_output_index: Option<u32>,
+	/// The script that defines the spend conditions of the custom output.
+	pub script: Script,
 }
 
 impl_writeable_tlv_based!(CustomOutputInCommitment, {
@@ -583,6 +585,7 @@ impl_writeable_tlv_based!(CustomOutputInCommitment, {
 	(2, amount_remote_msat, required),
 	(4, cltv_expiry, required),
 	(6, transaction_output_index, option),
+	(8, script, required),
 });
 
 #[inline]
@@ -661,8 +664,9 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 }
 
 #[inline]
-pub(crate) fn get_custom_output_redeemscript_with_explicit_keys(_custom_output: &CustomOutputInCommitment, _broadcaster_htlc_key: &PublicKey, _countersignatory_htlc_key: &PublicKey, _revocation_key: &PublicKey) -> Script {
-	Script::new()
+pub(crate) fn get_custom_output_redeemscript_with_explicit_keys(script: Script) -> Script {
+	// TODO: Embed this into a different script to make the custom output revocable!
+	script
 }
 
 /// Gets the witness redeemscript for an HTLC output in a commitment transaction. Note that htlc
@@ -674,8 +678,8 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, opt_anchors: bool, k
 
 /// Gets the witness redeemscript for a custom output in a commitment transaction.
 #[inline]
-pub fn get_custom_output_redeemscript(custom_output: &CustomOutputInCommitment, keys: &TxCreationKeys) -> Script {
-	get_custom_output_redeemscript_with_explicit_keys(custom_output, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key)
+pub fn get_custom_output_redeemscript(custom_output: &CustomOutputInCommitment) -> Script {
+	get_custom_output_redeemscript_with_explicit_keys(custom_output.script.clone())
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
@@ -1378,7 +1382,7 @@ impl CommitmentTransaction {
 
 		let mut custom_outputs = Vec::with_capacity(custom_outputs_in_commitment.len());
 		for custom_output_in_commitment in custom_outputs_in_commitment {
-			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment, &keys);
+			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment);
 			let txout = TxOut {
 				script_pubkey: script.to_v0_p2wsh(),
 				value: (custom_output_in_commitment.amount_local_msat + custom_output_in_commitment.amount_remote_msat) / 1000,

@@ -320,6 +320,8 @@ pub struct UpdateAddCustomOutput {
 	pub receiver_amount_msat: u64,
 	/// The expiry height of the custom output
 	pub cltv_expiry: u32,
+	/// The script of the custom output.
+	pub script: Script,
 	// pub(crate) onion_routing_packet: OnionPacket, TODO(10101): Determine if needed
 }
 
@@ -2013,10 +2015,12 @@ impl_writeable_msg!(UpdateAddCustomOutput, {
 	sender_amount_msat,
 	receiver_amount_msat,
 	cltv_expiry,
+	script,
 }, {});
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::Script;
 	use hex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -2990,10 +2994,11 @@ mod tests {
 			sender_amount_msat: 3608586615801332854,
 			receiver_amount_msat: 3608586615801332854,
 			cltv_expiry: 821716,
-			custom_output_id: CustomOutputId([4;32])
+			custom_output_id: CustomOutputId([4;32]),
+			script: Script::new(),
 		};
 		let encoded_value = update_add_custom_output.encode();
-		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202040404040404040404040404040404040404040404040404040404040404040432144668701144763214466870114476000c89d4").unwrap();
+		let target_value = hex::decode("0202020202020202020202020202020202020202020202020202020202020202040404040404040404040404040404040404040404040404040404040404040432144668701144763214466870114476000c89d40000").unwrap();
 
 		assert_eq!(encoded_value, target_value);
 	}
