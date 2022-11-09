@@ -403,12 +403,14 @@ struct HTLCStats {
 }
 
 // Gathering stats on pending custom outputs, either inbound or outbound side
+#[allow(dead_code)]
 struct CustomOutputInboundStats {
 	pending_custom_outputs: u32,
 	pending_custom_outputs_msat: u64,
 }
 
 // Gathering stats on pending custom outputs, either inbound or outbound side
+#[allow(dead_code)]
 struct CustomOutputOutboundStats {
 	pending_custom_outputs: u32,
 	pending_custom_outputs_msat: u64,
@@ -3129,7 +3131,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn update_add_custom_output<L: Deref>(&mut self, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, logger: &L) -> Result<(), ChannelError>
+	pub fn update_add_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, _logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
@@ -3181,7 +3183,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn update_remove_custom_output<L: Deref>(&mut self, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_settlement_amount_msat: u64, remote_settlement_amount_msat: u64, logger: &L) -> Result<(), ChannelError>
+	pub fn update_remove_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_settlement_amount_msat: u64, remote_settlement_amount_msat: u64, _logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger {
 		// We can't remove custom outputs after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
@@ -6041,7 +6043,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// We only build this to run checks based on the _current_ commitment transaction i.e.
 		// before adding the custom output
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+		let _commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 
 		// TODO(10101): Run similar checks for a custom output. The difference is that the custom outputs should be partially funded by both sides!
 		// if !self.is_outbound() {
@@ -6117,7 +6119,7 @@ impl<Signer: Sign> Channel<Signer> {
 		// We only build this to run checks based on the _current_ commitment transaction i.e.
 		// before removing the custom output
 		let keys = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
-		let commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
+		let _commitment_stats = self.build_commitment_transaction(self.cur_holder_commitment_transaction_number, &keys, true, true, logger);
 
 		if (self.channel_state & (ChannelState::AwaitingRemoteRevoke as u32 | ChannelState::MonitorUpdateInProgress as u32)) != 0 {
 			// TODO: should this be a hashmap as well?

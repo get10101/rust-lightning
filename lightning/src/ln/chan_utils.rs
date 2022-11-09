@@ -661,8 +661,7 @@ pub(crate) fn get_htlc_redeemscript_with_explicit_keys(htlc: &HTLCOutputInCommit
 }
 
 #[inline]
-pub(crate) fn get_custom_output_redeemscript_with_explicit_keys(custom_output: &CustomOutputInCommitment, broadcaster_htlc_key: &PublicKey, countersignatory_htlc_key: &PublicKey, revocation_key: &PublicKey) -> Script {
-	// TODO(10101): Build custom output script (or pass it in as an argument!)
+pub(crate) fn get_custom_output_redeemscript_with_explicit_keys(_custom_output: &CustomOutputInCommitment, _broadcaster_htlc_key: &PublicKey, _countersignatory_htlc_key: &PublicKey, _revocation_key: &PublicKey) -> Script {
 	Script::new()
 }
 

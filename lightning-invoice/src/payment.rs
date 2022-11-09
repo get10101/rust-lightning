@@ -1940,6 +1940,18 @@ mod tests {
 			})
 		}
 
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
+		}
+
 		fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 			self.scorer.lock().payment_path_failed(path, short_channel_id);
 		}
@@ -1956,11 +1968,6 @@ mod tests {
 			self.scorer.lock().probe_failed(path, short_channel_id);
 		}
 
-		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
-		) -> Result<AddCustomOutputRouteDetails, LightningError> {
-			todo!()
-		}
 	}
 
 	struct FailingRouter;
@@ -1973,19 +1980,25 @@ mod tests {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
 
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
+		}
+
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 
 		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
-
-		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
-		) -> Result<AddCustomOutputRouteDetails, LightningError> {
-			todo!()
-		}
+fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 
 	struct TestScorer {
@@ -2213,17 +2226,23 @@ mod tests {
 			self.check_attempts()
 		}
 
-		fn add_custom_output(
-			&self, route_details: AddCustomOutputRouteDetails,
-		) -> Result<(), String> {
-			todo!()
-		}
-
 		fn send_spontaneous_payment(
 			&self, route: &Route, _payment_preimage: PaymentPreimage,
 		) -> Result<PaymentId, PaymentSendFailure> {
 			self.check_value_msats(Amount::Spontaneous(route.get_total_amount()));
 			self.check_attempts()
+		}
+
+		fn add_custom_output(
+			&self, _route_details: AddCustomOutputRouteDetails,
+		) -> Result<CustomOutputId, String> {
+			todo!()
+		}
+
+		fn remove_custom_output(
+			&self, _route_details: RemoveCustomOutputDetails,
+		) -> Result<(), RemoveCustomOutputError> {
+			todo!()
 		}
 
 		fn retry_payment(
@@ -2248,6 +2267,18 @@ mod tests {
 			self.0.borrow_mut().pop_front().unwrap()
 		}
 
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry_delta: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
+		}
+
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
@@ -2255,12 +2286,6 @@ mod tests {
 		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
 		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
-
-		fn add_custom_output_route_details(
-			&self, dialer_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry_delta: u32, channel_details: ChannelDetails,
-		) -> Result<AddCustomOutputRouteDetails, LightningError> {
-			todo!()
-    }
 	}
 	impl ManualRouter {
 		fn expect_find_route(&self, result: Result<Route, LightningError>) {

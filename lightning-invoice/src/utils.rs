@@ -585,7 +585,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	}
 
 	fn add_custom_output_route_details(
-		&self, local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+		&self, _local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
 	) -> Result<AddCustomOutputRouteDetails, LightningError> {
 		let ChannelDetails { outbound_capacity_msat, inbound_capacity_msat, short_channel_id, counterparty, .. } = channel_details;
 
@@ -622,19 +622,16 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	}
 
 	fn remove_custom_output_route_details(&self, custom_output_id: CustomOutputId, local_amount_msats: u64, remote_amount_msats: u64, channel_details: ChannelDetails) -> Result<RemoveCustomOutputDetails, LightningError> {
-		let ChannelDetails { short_channel_id, counterparty, .. } = channel_details;
+		let ChannelDetails { short_channel_id, .. } = channel_details;
 
-		let short_channel_id = short_channel_id.ok_or_else(|| LightningError {
+		let _short_channel_id = short_channel_id.ok_or_else(|| LightningError {
 			err: format!("Cannot create custom output if funding transaction has not been confirmed yet"),
 			action: ErrorAction::IgnoreError
 		})?;
 
 		// TODO(10101): we should do some sanity checks here for the amounts
 
-		Ok(RemoveCustomOutputDetails {
-			custom_output_id,
-			local_amount_msats,
-			remote_amount_msats, })
+		Ok(RemoveCustomOutputDetails { custom_output_id, local_amount_msats, remote_amount_msats })
 	}
 
 

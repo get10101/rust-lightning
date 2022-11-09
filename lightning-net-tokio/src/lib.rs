@@ -41,28 +41,28 @@
 //!
 //! // Connect to node with pubkey their_node_id at addr:
 //! async fn connect_to_node(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, their_node_id: PublicKey, addr: SocketAddr) {
-//! 	lightning_net_tokio::connect_outbound(peer_manager, their_node_id, addr).await;
-//! 	loop {
-//! 		let event_handler = |event: &Event| {
-//! 			// Handle the event!
-//! 		};
-//! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&event_handler);
-//! 		chain_monitor.process_pending_events(&event_handler);
-//! 	}
+//!	lightning_net_tokio::connect_outbound(peer_manager, their_node_id, addr).await;
+//!	loop {
+//!		let event_handler = |event: &Event| {
+//!			// Handle the event!
+//!		};
+//!		channel_manager.await_persistable_update();
+//!		channel_manager.process_pending_events(&event_handler);
+//!		chain_monitor.process_pending_events(&event_handler);
+//!	}
 //! }
 //!
 //! // Begin reading from a newly accepted socket and talk to the peer:
 //! async fn accept_socket(peer_manager: PeerManager, chain_monitor: Arc<ChainMonitor>, channel_manager: ChannelManager, socket: TcpStream) {
-//! 	lightning_net_tokio::setup_inbound(peer_manager, socket);
-//! 	loop {
-//! 		let event_handler = |event: &Event| {
-//! 			// Handle the event!
-//! 		};
-//! 		channel_manager.await_persistable_update();
-//! 		channel_manager.process_pending_events(&event_handler);
-//! 		chain_monitor.process_pending_events(&event_handler);
-//! 	}
+//!	lightning_net_tokio::setup_inbound(peer_manager, socket);
+//!	loop {
+//!		let event_handler = |event: &Event| {
+//!			// Handle the event!
+//!		};
+//!		channel_manager.await_persistable_update();
+//!		channel_manager.process_pending_events(&event_handler);
+//!		chain_monitor.process_pending_events(&event_handler);
+//!	}
 //! }
 //! ```
 
@@ -154,7 +154,7 @@ impl Connection {
 			OMH::Target: OnionMessageHandler + 'static + Send + Sync,
 			L::Target: Logger + 'static + Send + Sync,
 			UMH::Target: CustomMessageHandler + 'static + Send + Sync,
-        {
+	{
 		// Create a waker to wake up poll_event_process, above
 		let (event_waker, event_receiver) = mpsc::channel(1);
 		tokio::spawn(Self::poll_event_process(Arc::clone(&peer_manager), event_receiver));
@@ -594,6 +594,8 @@ mod tests {
 		fn handle_shutdown(&self, _their_node_id: &PublicKey, _their_features: &InitFeatures, _msg: &Shutdown) {}
 		fn handle_closing_signed(&self, _their_node_id: &PublicKey, _msg: &ClosingSigned) {}
 		fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateAddHTLC) {}
+		fn handle_update_add_custom_output(&self, _their_node_id: &PublicKey, _msg: &UpdateAddCustomOutput) {}
+		fn handle_update_remove_custom_output(&self, _their_node_id: &PublicKey, _msg: &UpdateRemoveCustomOutput) {}
 		fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFulfillHTLC) {}
 		fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailHTLC) {}
 		fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, _msg: &UpdateFailMalformedHTLC) {}
@@ -601,7 +603,6 @@ mod tests {
 		fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, _msg: &RevokeAndACK) {}
 		fn handle_update_fee(&self, _their_node_id: &PublicKey, _msg: &UpdateFee) {}
 		fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, _msg: &AnnouncementSignatures) {}
-		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
 		fn peer_disconnected(&self, their_node_id: &PublicKey, _no_connection_possible: bool) {
 			if *their_node_id == self.expected_pubkey {
 				self.disconnected_flag.store(true, Ordering::SeqCst);
@@ -615,11 +616,10 @@ mod tests {
 			Ok(())
 		}
 		fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, _msg: &ChannelReestablish) {}
+		fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &ChannelUpdate) {}
 		fn handle_error(&self, _their_node_id: &PublicKey, _msg: &ErrorMessage) {}
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 		fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures { InitFeatures::empty() }
-
-		fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateAddCustomOutput) {}
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {

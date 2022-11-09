@@ -302,7 +302,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	let (bs_initial_fulfill, bs_initial_commitment_signed) = match events_2[0] {
-		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
+		MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, .. } } => {
 			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fulfill_htlcs.len(), 1);
@@ -2686,7 +2686,7 @@ fn double_temp_error() {
 	assert_eq!(events.len(), 1);
 	let (update_fulfill_1, commitment_signed_b1, node_id) = {
 		match &events[0] {
-			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
+			&MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, .. } } => {
 				assert!(update_add_htlcs.is_empty());
 				assert_eq!(update_fulfill_htlcs.len(), 1);
 				assert!(update_fail_htlcs.is_empty());
