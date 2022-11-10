@@ -197,6 +197,19 @@ pub struct PaymentId(pub [u8; 32]);
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct CustomOutputId(pub [u8; 32]);
 
+/// How to use a custom output as an input in another transaction.
+#[derive(Clone, Debug)]
+pub struct CustomOutputDetails {
+	/// Unique identifier for the custom output.
+	pub id: CustomOutputId,
+	/// Where the output is located in the commitment transaction.
+	pub outpoint: OutPoint,
+	/// The script to be signed when spending the custom output.
+	pub script: Script,
+	/// The shared amount in the custom output.
+	pub amount: u64,
+}
+
 impl Display for CustomOutputId {
 
 	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
@@ -2749,7 +2762,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		remote_amount_msat: u64,
 		cltv_expiry: u32,
 		script: Script,
-	) -> Result<CustomOutputId, String>	{
+	) -> Result<CustomOutputDetails, String>	{
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_id = channel_lock
 			.short_to_chan_info
@@ -2782,7 +2795,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let custom_output_id = CustomOutputId(self.keys_manager.get_secure_random_bytes());
 
 
-		let (update_add, commitment_signed, monitor_update) =
+		let (custom_output_details, update_add, commitment_signed, monitor_update) =
 			match channel.get_mut().add_custom_output_and_commit(custom_output_id,
 				local_amount_msat,
 				remote_amount_msat,
@@ -2791,23 +2804,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				&self.logger
 			)
 		{
-			Ok(Some(res)) => res,
-			Ok(None) => {
-				self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
-					channel_id,
-					short_channel_id,
-					local_amount_msat,
-					remote_amount_msat,
-					script,
-				});
-				// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
-				// should be used like when adding HTLCs: if the channel reports that it is "in
-				// the middle of something" and it should not be modified, we do nothing. The
-				// work should be queued up in `holding_cell_custom_output_updates`, so it can
-				// be picked up later (yet to be implemented. Consider how
-				// `holding_cell_htlc_updates` is used)
-				return Ok(custom_output_id);
-			}
+			Ok(res) => res,
 			Err(e) => {
 				let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
 				if drop {
@@ -2859,7 +2856,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				update_fail_htlcs: Vec::new(),
 				update_fail_malformed_htlcs: Vec::new(),
 				update_fee: None,
-				commitment_signed,
+				commitment_signed, // TODO: Don't send this yet!
 				update_add_custom_output: vec![update_add],
 				update_remove_custom_output: Vec::new()
 			},
@@ -2872,7 +2869,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			remote_amount_msat,
 			script,
 		});
-		Ok(custom_output_id)
+
+		Ok(custom_output_details)
 	}
 
 	/// Remove custom output from channel
@@ -2909,17 +2907,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let (update_remove_custom_output, commitment_signed, monitor_update) =
 			match channel.get_mut().remove_custom_output_and_commit(custom_output_id, local_amount, remote_amount, &self.logger)
 			{
-				Ok(Some(res)) => res,
-				Ok(None) => {
-					custom_outputs.remove(&custom_output_id);
-					// TODO(10101): It's unclear to me what we are supposed to do here. I think `Ok(None)`
-					// should be used like when adding HTLCs: if the channel reports that it is "in
-					// the middle of something" and it should not be modified, we do nothing. The
-					// work should be queued up in `holding_cell_custom_output_updates`, so it can
-					// be picked up later (yet to be implemented. Consider how
-					// `holding_cell_htlc_updates` is used)
-					return Ok(());
-				}
+				Ok(res) => res,
 				Err(e) => {
 					let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
 					if drop {
@@ -3531,7 +3519,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 
 						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment(&self.logger) {
+							let (commitment_msg, monitor_update, _) = match chan.get_mut().send_commitment(&self.logger) {
 								Ok(res) => res,
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case

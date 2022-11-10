@@ -41,6 +41,8 @@ use core::ops::Deref;
 use crate::chain;
 use crate::util::crypto::sign;
 
+use super::channelmanager::CustomOutputId;
+
 pub(crate) const MAX_HTLCS: u16 = 483;
 pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT: usize = 133;
 pub(crate) const OFFERED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 136;
@@ -562,13 +564,15 @@ impl_writeable_tlv_based!(HTLCOutputInCommitment, {
 	(8, transaction_output_index, option),
 });
 
-/// Information about a custom output as it appears in a commitment transaction.
+/// Information about a custom output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomOutputInCommitment {
+	/// ID.
+	pub id: CustomOutputId,
 	/// The value, in msat, of the custom output provided by the local node.
-	pub amount_local_msat: u64,
+	pub local_amount_msat: u64,
 	/// The value, in msat, of the custom output provided by the remote node.
-	pub amount_remote_msat: u64,
+	pub remote_amount_msat: u64,
 	/// The CLTV lock-time at which this custom output expires.
 	pub cltv_expiry: u32,
 	/// The position within the commitment transactions' outputs.
@@ -581,11 +585,12 @@ pub struct CustomOutputInCommitment {
 }
 
 impl_writeable_tlv_based!(CustomOutputInCommitment, {
-	(0, amount_local_msat, required),
-	(2, amount_remote_msat, required),
-	(4, cltv_expiry, required),
-	(6, transaction_output_index, option),
-	(8, script, required),
+	(0, id, required),
+	(2, local_amount_msat, required),
+	(4, remote_amount_msat, required),
+	(6, cltv_expiry, required),
+	(8, transaction_output_index, option),
+	(10, script, required),
 });
 
 #[inline]
@@ -678,8 +683,8 @@ pub fn get_htlc_redeemscript(htlc: &HTLCOutputInCommitment, opt_anchors: bool, k
 
 /// Gets the witness redeemscript for a custom output in a commitment transaction.
 #[inline]
-pub fn get_custom_output_redeemscript(custom_output: &CustomOutputInCommitment) -> Script {
-	get_custom_output_redeemscript_with_explicit_keys(custom_output.script.clone())
+pub fn get_custom_output_redeemscript(script: Script) -> Script {
+	get_custom_output_redeemscript_with_explicit_keys(script)
 }
 
 /// Gets the redeemscript for a funding output from the two funding public keys.
@@ -1204,13 +1209,13 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: u64,
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
-	custom_outputs: Vec<CustomOutputInCommitment>,
+	pub custom_outputs: Vec<CustomOutputInCommitment>,
 	// A boolean that is serialization backwards-compatible
 	opt_anchors: Option<()>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
 	keys: TxCreationKeys,
 	// For access to the pre-built transaction, see doc for trust()
-	built: BuiltCommitmentTransaction,
+	pub built: BuiltCommitmentTransaction,
 }
 
 impl Eq for CommitmentTransaction {}
@@ -1382,10 +1387,9 @@ impl CommitmentTransaction {
 
 		let mut custom_outputs = Vec::with_capacity(custom_outputs_in_commitment.len());
 		for custom_output_in_commitment in custom_outputs_in_commitment {
-			let script = chan_utils::get_custom_output_redeemscript(&custom_output_in_commitment);
 			let txout = TxOut {
-				script_pubkey: script.to_v0_p2wsh(),
-				value: (custom_output_in_commitment.amount_local_msat + custom_output_in_commitment.amount_remote_msat) / 1000,
+				script_pubkey: custom_output_in_commitment.script.to_v0_p2wsh(),
+				value: (custom_output_in_commitment.local_amount_msat + custom_output_in_commitment.remote_amount_msat) / 1000,
 			};
 			txouts.push((txout, None, Some(custom_output_in_commitment)));
 		}

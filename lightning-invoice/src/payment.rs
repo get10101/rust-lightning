@@ -147,7 +147,7 @@ use bitcoin::Script;
 use crate::prelude::*;
 use lightning::io;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, CustomOutputId, PaymentId, PaymentSendFailure, RemoveCustomOutputError};
+use lightning::ln::channelmanager::{ChannelDetails, CustomOutputId, PaymentId, PaymentSendFailure, RemoveCustomOutputError, CustomOutputDetails};
 use lightning::ln::msgs::{LightningError, ErrorAction};
 use lightning::routing::gossip::NodeId;
 use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, AddCustomOutputRouteDetails, RemoveCustomOutputDetails};
@@ -267,7 +267,7 @@ pub trait Payer {
 	/// Adds a custom output over the Lightning Network using the given [`Route`].
 	fn add_custom_output(
 		&self, route_details: AddCustomOutputRouteDetails, script: Script
-	) -> Result<CustomOutputId, String>;
+	) -> Result<CustomOutputDetails, String>;
 
 	/// Removes a custom output with the provided values.
 	fn remove_custom_output(
@@ -467,7 +467,7 @@ where
 	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
 	pub fn add_custom_output(
 		&self, pubkey: PublicKey, amount_local_msats: u64, amount_remote_msats: u64, final_cltv_expiry_delta: u32, script: Script
-	) -> Result<CustomOutputId, PaymentError> {
+	) -> Result<CustomOutputDetails, PaymentError> {
 		// TODO: We might have more than one channel with the peer identified by the
 		// `pubkey` argument. We will need to use a heuristic to select a channel among all
 		// the candidates
@@ -491,9 +491,9 @@ where
 			channel_details,
 		).map_err(|e| PaymentError::Routing(e))?;
 
-		let custom_output_id = self.payer.add_custom_output(route_details, script).map_err(PaymentError::CreatingCustomOutput)?;
+		let custom_output_details = self.payer.add_custom_output(route_details, script).map_err(PaymentError::CreatingCustomOutput)?;
 
-		Ok(custom_output_id)
+		Ok(custom_output_details)
 	}
 
 
@@ -2236,7 +2236,7 @@ fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u6
 
 		fn add_custom_output(
 			&self, _route_details: AddCustomOutputRouteDetails, _script: Script
-		) -> Result<CustomOutputId, String> {
+		) -> Result<CustomOutputDetails, String> {
 			todo!()
 		}
 
