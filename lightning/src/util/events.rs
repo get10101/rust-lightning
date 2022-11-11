@@ -1161,6 +1161,13 @@ impl MaybeReadable for Event {
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
 #[derive(Clone, Debug)]
 pub enum MessageSendEvent {
+	/// Used to indicate that we've added a custom output locally.
+	AddCustomOutput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::UpdateAddCustomOutput,
+	},
 	/// Used to indicate that we've accepted a channel open and should send the accept_channel
 	/// message provided to the given peer.
 	SendAcceptChannel {
@@ -1213,8 +1220,8 @@ pub enum MessageSendEvent {
 		/// The update messages which should be sent. ALL messages in the struct should be sent!
 		updates: msgs::CommitmentUpdate,
 	},
-        /// Used to indicate that a series of custom output update messages, as well as a
-        /// commitment_signed message should be sent to the peer with the given node_id.
+	/// Used to indicate that a series of custom output update messages, as well as a
+	/// commitment_signed message should be sent to the peer with the given node_id.
 	/// Used to indicate that a revoke_and_ack message should be sent to the peer with the given node_id.
 	SendRevokeAndACK {
 		/// The node_id of the node which should receive this message

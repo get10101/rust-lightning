@@ -202,8 +202,10 @@ pub struct CustomOutputId(pub [u8; 32]);
 pub struct CustomOutputDetails {
 	/// Unique identifier for the custom output.
 	pub id: CustomOutputId,
-	/// Where the output is located in the commitment transaction.
-	pub outpoint: OutPoint,
+	/// Where the output is located in the local commitment transaction.
+	pub outpoint_commit_local: OutPoint,
+	/// Where the output is located in the remote commitment transaction.
+	pub outpoint_commit_remote: OutPoint,
 	/// The script to be signed when spending the custom output.
 	pub script: Script,
 	/// The shared amount in the custom output.
@@ -2795,8 +2797,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let custom_output_id = CustomOutputId(self.keys_manager.get_secure_random_bytes());
 
 
-		let (custom_output_details, update_add, commitment_signed, monitor_update) =
-			match channel.get_mut().add_custom_output_and_commit(custom_output_id,
+		let (custom_output_details, update_add) =
+			match channel.get_mut().add_custom_output_and_build_commits(custom_output_id,
 				local_amount_msat,
 				remote_amount_msat,
 				cltv_expiry,
@@ -2819,47 +2821,40 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			},
 		};
 
-		let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
 		let channel_id = channel.get().channel_id();
-		match (update_err,
-			   handle_monitor_update_res!(self, update_err, channel_holder, channel,
-					  RAACommitmentOrder::CommitmentFirst, false, true))
-		{
-			(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => return Err(format!("{}", e.err.err)),
-			(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
-				// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
-				// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
-				//     session_privs: HashSet::new(),
-				//     pending_amt_msat: 0,
-				//     pending_fee_msat: Some(0),
-				//     payment_hash: *payment_hash,
-				//     payment_secret: *payment_secret,
-				//     starting_block_height: self.best_block.read().unwrap().height(),
-				//     total_msat: total_value,
-				// });
-				// assert!(payment.insert(session_priv_bytes, path));
 
-				if res.is_err() {
-					return Err("Monitor update in progress".to_owned());
-				}
-			},
-			_ => unreachable!(),
-		}
+		// TODO(10101): We have to monitor after we sign the commit transaction later!
+		// let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+		// match (update_err,
+		//	   handle_monitor_update_res!(self, update_err, channel_holder, channel,
+		//			  RAACommitmentOrder::CommitmentFirst, false, true))
+		// {
+		//	(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => return Err(format!("{}", e.err.err)),
+		//	(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
+		//		// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
+		//		// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
+		//		//     session_privs: HashSet::new(),
+		//		//     pending_amt_msat: 0,
+		//		//     pending_fee_msat: Some(0),
+		//		//     payment_hash: *payment_hash,
+		//		//     payment_secret: *payment_secret,
+		//		//     starting_block_height: self.best_block.read().unwrap().height(),
+		//		//     total_msat: total_value,
+		//		// });
+		//		// assert!(payment.insert(session_priv_bytes, path));
+
+		//		if res.is_err() {
+		//			return Err("Monitor update in progress".to_owned());
+		//		}
+		//	},
+		//	_ => unreachable!(),
+		// }
 
 		log_debug!(self.logger, "Adding custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
 
-		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::AddCustomOutput {
 			node_id: pk_counterparty,
-			updates: msgs::CommitmentUpdate {
-				update_add_htlcs: Vec::new(),
-				update_fulfill_htlcs: Vec::new(),
-				update_fail_htlcs: Vec::new(),
-				update_fail_malformed_htlcs: Vec::new(),
-				update_fee: None,
-				commitment_signed, // TODO: Don't send this yet!
-				update_add_custom_output: vec![update_add],
-				update_remove_custom_output: Vec::new()
-			},
+			msg: update_add,
 		});
 
 		self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
@@ -3519,7 +3514,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 
 						if !add_htlc_msgs.is_empty() || !fail_htlc_msgs.is_empty() {
-							let (commitment_msg, monitor_update, _) = match chan.get_mut().send_commitment(&self.logger) {
+							let (commitment_msg, monitor_update) = match chan.get_mut().send_commitment(&self.logger) {
 								Ok(res) => res,
 								Err(e) => {
 									// We surely failed send_commitment due to bad keys, in that case
@@ -6436,6 +6431,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			});
 			pending_msg_events.retain(|msg| {
 				match msg {
+					&events::MessageSendEvent::AddCustomOutput { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != counterparty_node_id,

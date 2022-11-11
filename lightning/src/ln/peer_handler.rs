@@ -1616,6 +1616,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			for event in events_generated.drain(..) {
 				match event {
+					MessageSendEvent::AddCustomOutput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling AddCustomOutput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
 					MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
 						log_debug!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),

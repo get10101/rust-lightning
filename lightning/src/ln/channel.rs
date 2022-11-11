@@ -2089,7 +2089,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(&mut self, htlc_id: u64, payment_preimage: PaymentPreimage, logger: &L) -> Result<UpdateFulfillCommitFetch, (ChannelError, ChannelMonitorUpdate)> where L::Target: Logger {
 		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, logger) {
 			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, msg: Some(update_fulfill_htlc) } => {
-				let (commitment, mut additional_update, _) = match self.send_commitment_no_status_check(logger) {
+				let (commitment, mut additional_update) = match self.send_commitment_no_status_check(logger) {
 					Err(e) => return Err((e, monitor_update)),
 					Ok(res) => res
 				};
@@ -3518,7 +3518,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// the corresponding HTLC status updates so that get_last_commitment_update
 				// includes the right HTLCs.
 				self.monitor_pending_commitment_signed = true;
-				let (_, mut additional_update, _) = self.send_commitment_no_status_check(logger).map_err(|e| (None, e))?;
+				let (_, mut additional_update) = self.send_commitment_no_status_check(logger).map_err(|e| (None, e))?;
 				// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
 				// strictly increasing by one, so decrement it here.
 				self.latest_monitor_update_id = monitor_update.update_id;
@@ -3533,7 +3533,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// If we're AwaitingRemoteRevoke we can't send a new commitment here, but that's ok -
 			// we'll send one right away when we get the revoke_and_ack when we
 			// free_holding_cell_htlcs().
-			let (msg, mut additional_update, _) = self.send_commitment_no_status_check(logger).map_err(|e| (None, e))?;
+			let (msg, mut additional_update) = self.send_commitment_no_status_check(logger).map_err(|e| (None, e))?;
 			// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
 			// strictly increasing by one, so decrement it here.
 			self.latest_monitor_update_id = monitor_update.update_id;
@@ -3652,7 +3652,7 @@ impl<Signer: Sign> Channel<Signer> {
 				None
 			};
 
-			let (commitment_signed, mut additional_update, _) = self.send_commitment_no_status_check(logger)?;
+			let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check(logger)?;
 			// send_commitment_no_status_check and get_update_fulfill_htlc may bump latest_monitor_id
 			// but we want them to be strictly increasing by one, so reset it here.
 			self.latest_monitor_update_id = monitor_update.update_id;
@@ -3869,7 +3869,7 @@ impl<Signer: Sign> Channel<Signer> {
 				// When the monitor updating is restored we'll call get_last_commitment_update(),
 				// which does not update state, but we're definitely now awaiting a remote revoke
 				// before we can step forward any more, so set it here.
-				let (_, mut additional_update, _) = self.send_commitment_no_status_check(logger)?;
+				let (_, mut additional_update) = self.send_commitment_no_status_check(logger)?;
 				// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
 				// strictly increasing by one, so decrement it here.
 				self.latest_monitor_update_id = monitor_update.update_id;
@@ -3914,7 +3914,7 @@ impl<Signer: Sign> Channel<Signer> {
 			},
 			(None, htlcs_to_fail) => {
 				if require_commitment {
-					let (commitment_signed, mut additional_update, _) = self.send_commitment_no_status_check(logger)?;
+					let (commitment_signed, mut additional_update) = self.send_commitment_no_status_check(logger)?;
 
 					// send_commitment_no_status_check may bump latest_monitor_id but we want them to be
 					// strictly increasing by one, so decrement it here.
@@ -4009,7 +4009,7 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn send_update_fee_and_commit<L: Deref>(&mut self, feerate_per_kw: u32, logger: &L) -> Result<Option<(msgs::UpdateFee, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
 		match self.send_update_fee(feerate_per_kw, logger) {
 			Some(update_fee) => {
-				let (commitment_signed, monitor_update, _) = self.send_commitment_no_status_check(logger)?;
+				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_fee, commitment_signed, monitor_update)))
 			},
 			None => Ok(None)
@@ -6197,7 +6197,7 @@ impl<Signer: Sign> Channel<Signer> {
 	/// Always returns a ChannelError::Close if an immediately-preceding (read: the
 	/// last call to this Channel) send_htlc returned Ok(Some(_)) and there is an Err.
 	/// May panic if called except immediately after a successful, Ok(Some(_))-returning send_htlc.
-	pub fn send_commitment<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate, Vec<CustomOutputDetails>), ChannelError> where L::Target: Logger {
+	pub fn send_commitment<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
 			panic!("Cannot create commitment tx until channel is fully established");
 		}
@@ -6229,7 +6229,7 @@ impl<Signer: Sign> Channel<Signer> {
 		self.send_commitment_no_status_check(logger)
 	}
 	/// Only fails in case of bad keys
-	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate, Vec<CustomOutputDetails>), ChannelError> where L::Target: Logger {
+	fn send_commitment_no_status_check<L: Deref>(&mut self, logger: &L) -> Result<(msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
 		log_trace!(logger, "Updating HTLC state for a newly-sent commitment_signed...");
 		// We can upgrade the status of some HTLCs that are waiting on a commitment, even if we
 		// fail to generate this, we still are at least at a position where upgrading their status
@@ -6262,12 +6262,12 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		self.resend_order = RAACommitmentOrder::RevokeAndACKFirst;
 
-		let (res, counterparty_commitment_txid, htlcs, custom_output_details_list) = match self.send_commitment_no_state_update(logger) {
-			Ok((res, (counterparty_commitment_tx, mut htlcs), custom_output_details_list)) => {
+		let (res, counterparty_commitment_txid, htlcs) = match self.send_commitment_no_state_update(logger) {
+			Ok((res, (counterparty_commitment_tx, mut htlcs))) => {
 				// Update state now that we've passed all the can-fail calls...
 				let htlcs_no_ref: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> =
 					htlcs.drain(..).map(|(htlc, htlc_source)| (htlc, htlc_source.map(|source_ref| Box::new(source_ref.clone())))).collect();
-				(res, counterparty_commitment_tx, htlcs_no_ref, custom_output_details_list)
+				(res, counterparty_commitment_tx, htlcs_no_ref)
 			},
 			Err(e) => return Err(e),
 		};
@@ -6288,27 +6288,14 @@ impl<Signer: Sign> Channel<Signer> {
 			}]
 		};
 		self.channel_state |= ChannelState::AwaitingRemoteRevoke as u32;
-		Ok((res, monitor_update, custom_output_details_list))
+		Ok((res, monitor_update))
 	}
 
 	/// Only fails in case of bad keys. Used for channel_reestablish commitment_signed generation
 	/// when we shouldn't change HTLC/channel state.
-	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>), Vec<CustomOutputDetails>), ChannelError> where L::Target: Logger {
+	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
 		let counterparty_keys = self.build_remote_transaction_keys()?;
 		let commitment_stats = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, true, logger);
-
-		let mut custom_output_details_list = Vec::new();
-		for custom_output in commitment_stats.tx.custom_outputs.iter() {
-			let script_to_sign = custom_output.script.clone(); // TODO(10101): We think this is wrong.
-			let amount = (custom_output.local_amount_msat + custom_output.remote_amount_msat) / 1000;
-			let outpoint = OutPoint {
-				txid: commitment_stats.tx.built.txid,
-				index: custom_output.transaction_output_index.unwrap() as u16
-			};
-
-			custom_output_details_list.push(CustomOutputDetails { id: custom_output.id, outpoint, script: script_to_sign, amount });
-		}
-
 
 		let counterparty_commitment_txid = commitment_stats.tx.trust().txid();
 		let (signature, htlc_signatures);
@@ -6360,7 +6347,7 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			signature,
 			htlc_signatures,
-		}, (counterparty_commitment_txid, commitment_stats.htlcs_included), custom_output_details_list))
+		}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
 	}
 
 	/// Adds a pending outbound HTLC to this channel, and creates a signed commitment transaction
@@ -6370,14 +6357,14 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn send_htlc_and_commit<L: Deref>(&mut self, amount_msat: u64, payment_hash: PaymentHash, cltv_expiry: u32, source: HTLCSource, onion_routing_packet: msgs::OnionPacket, logger: &L) -> Result<Option<(msgs::UpdateAddHTLC, msgs::CommitmentSigned, ChannelMonitorUpdate)>, ChannelError> where L::Target: Logger {
 		match self.send_htlc(amount_msat, payment_hash, cltv_expiry, source, onion_routing_packet, logger)? {
 			Some(update_add_htlc) => {
-				let (commitment_signed, monitor_update, _) = self.send_commitment_no_status_check(logger)?;
+				let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 				Ok(Some((update_add_htlc, commitment_signed, monitor_update)))
 			},
 			None => Ok(None)
 		}
 	}
 
-	pub fn add_custom_output_and_commit<L: Deref>(
+	pub fn add_custom_output_and_build_commits<L: Deref>(
 		&mut self,
 		custom_output_id: CustomOutputId,
 		amount_us_msat: u64,
@@ -6385,18 +6372,33 @@ impl<Signer: Sign> Channel<Signer> {
 		cltv_expiry: u32,
 		script: Script,
 		logger: &L
-	) -> Result<(CustomOutputDetails, msgs::UpdateAddCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+	) -> Result<(CustomOutputDetails, msgs::UpdateAddCustomOutput), ChannelError> where L::Target: Logger {
 		let update_add_custom_output = self.add_custom_output(custom_output_id, amount_us_msat, amount_counterparty_msat, cltv_expiry, script, logger)?;
-		let (commitment_signed, monitor_update, custom_output_details_list) = self.send_commitment_no_status_check(logger)?;
 
-		let custom_output_details = custom_output_details_list.iter().find(|custom_output_details| custom_output_details.id == custom_output_id).unwrap().clone();
+		let keys_local = self.build_holder_transaction_keys(todo!("commitment number"))?;
+		let commitment_stats_local = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_local, true, true, logger);
+		let keys_remote = self.build_remote_transaction_keys()?;
+		let commitment_stats_remote = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_remote, false, true, logger);
 
-		Ok((custom_output_details, update_add_custom_output, commitment_signed, monitor_update))
+		// TODO: Continue here
+		// let mut custom_output_details_list = Vec::new();
+		// for custom_output in commitment_stats.tx.custom_outputs.iter() {
+		//	let script_to_sign = custom_output.script.clone(); // TODO(10101): We think this is wrong.
+		//	let amount = (custom_output.local_amount_msat + custom_output.remote_amount_msat) / 1000;
+		//	let outpoint = OutPoint {
+		//		txid: commitment_stats.tx.built.txid,
+		//		index: custom_output.transaction_output_index.unwrap() as u16
+		//	};
+
+		//	custom_output_details_list.push(CustomOutputDetails { id: custom_output.id, outpoint, script: script_to_sign, amount });
+		// }
+
+		Ok((todo!(), update_add_custom_output))
 	}
 
 	pub fn remove_custom_output_and_commit<L: Deref>(&mut self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64, logger: &L) -> Result<(msgs::UpdateRemoveCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger{
 		let update_remove_custom_output = self.remove_custom_output(custom_output_id, local_amount, remote_amount, logger)?;
-		let (commitment_signed, monitor_update, _) = self.send_commitment_no_status_check(logger)?;
+		let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
 		Ok((update_remove_custom_output, commitment_signed, monitor_update))
 	}
 
