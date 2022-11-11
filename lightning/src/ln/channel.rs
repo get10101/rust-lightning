@@ -236,28 +236,49 @@ struct CustomOutput {
 // TODO(10101): The variants are tentative
 #[derive(PartialEq, Debug)]
 enum CustomOutputState {
-	/// Added by us and included in a commitment_signed
-	LocalAnnounced, // TODO(10101): Might need to add `Box<msgs::OnionPacket>` like for `OutboundHTLCState::LocalAnnounced`
-	/// Added by the remote node
-	RemoteAnnounced,
-	// we received RemoteAnnounced and are waiting for the remote to announce the RAA to us.
-	AwaitingRemoteRevoke,
+	Alpha(AlphaCustomOutputState),
+	Beta(BetaCustomOutputState),
+}
+
+#[derive(PartialEq, Debug)]
+enum AlphaCustomOutputState {
+	LocalAddedCustomOutput,
+	RemoteCommitmentSignatureReceived,
+	LocalCommitmentSignatureSent,
+	RevokeAndAckSent,
+	RevokeAndAckReceived,
+	// Removing states
 	LocalRemoved {
 		local_profit: i64,
 	},
 	RemoteRemoved {
-		local_profit: i64
+		local_profit: i64,
 	},
-	Committed,
-	// we received RemoteRemoved and are waiting for the remote to announce the RAA to us.
-	AwaitingRemoteRemoveToRevoke  {
-		local_profit: i64
+	AwaitingRemoteToRevokeAfterRemoval{
+		local_profit: i64,
 	},
-	// TODO: I think this can be removed
-	RemoteSettled,
-	AwaitingRemoteRevokeToSettle,
-	AwaitingRemovedRemoteRevoke,
 }
+
+#[derive(PartialEq, Debug)]
+enum BetaCustomOutputState {
+	ReceivedAddCustomOutputRequest,
+	LocalAddedCustomOutput,
+	LocalCommitmentSignatureSent,
+	RemoteCommitmentSignatureReceived,
+	RevokeAndAckReceived,
+	RevokeAndAckSent,
+	// Removing states
+	LocalRemoved{
+		local_profit: i64,
+	},
+	RemoteRemoved{
+		local_profit: i64,
+	},
+	AwaitingRemoteToRevokeAfterRemoval{
+		local_profit: i64,
+	},
+}
+
 
 /// See AwaitingRemoteRevoke ChannelState for more info
 enum HTLCUpdateAwaitingACK {
@@ -1645,17 +1666,24 @@ impl<Signer: Sign> Channel<Signer> {
 		let mut from_remote_custom_output_msat = 0;
 		let mut local_settlement_profit_msat = 0;
 		for (_, ref custom_output) in self.pending_custom_outputs.iter() {
-			let state_name = match custom_output.state {
-				CustomOutputState::LocalAnnounced => "LocalAnnounced",
-				CustomOutputState::RemoteAnnounced => "RemoteAnnounced",
-				CustomOutputState::AwaitingRemoteRevoke => "AwaitingRemoteRevoke",
-				CustomOutputState::Committed => "Committed",
-				CustomOutputState::RemoteSettled => "RemoteSettled",
-				CustomOutputState::AwaitingRemoteRevokeToSettle => "AwaitingRemoteRevokeToSettle",
-				CustomOutputState::AwaitingRemovedRemoteRevoke => "AwaitingRemovedRemoteRevoke",
-				CustomOutputState::LocalRemoved {..} => "LocalRemoved",
-				CustomOutputState::RemoteRemoved {..} => "RemoteRemoved",
-				CustomOutputState::AwaitingRemoteRemoveToRevoke { .. } => {"AwaitingRemoteRemoveToRevoke"}
+			let state_name = match &custom_output.state {
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { .. }) => { "AlphaRemoteRemoved" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => { "AlphaLocalAddedCustomOutput" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived) => { "AlphaRemoteCommitmentSignatureReceived" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) => { "AlphaLocalCommitmentSignatureSent" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) => { "AlphaRevokeAndAckSent" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) => { "AlphaRevokeAndAckReceived" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { .. }) => { "AlphaLocalRemoved" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { .. }) => { "AlphaAwaitingRemoteToRevokeAfterRemoval" }
+				CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) => { "BetaReceivedAddCustomOutputRequest" }
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => { "BetaLocalAddedCustomOutput" }
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) => { "BetaLocalCommitmentSignatureSent" }
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived) => { "BetaRemoteCommitmentSignatureReceived" }
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived) => { "BetaRevokeAndAckReceived" }
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent) => { "BetaRevokeAndAckSent" }
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { .. }) => { "BetaLocalRemoved" }
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { .. }) => { "BetaRemoteRemoved" }
+				CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { .. }) => { "BetaAwaitingRemoteToRevokeAfterRemoval" }
 			};
 
 			// TODO(10101): Use `generated_by_local` and `custom_output.state` to determine if the output should be included in the transaction?
@@ -1677,7 +1705,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 			// assume custom output is > dust limit + associated tx fee, therefore always include
 
-			if let CustomOutputState::LocalAnnounced | CustomOutputState::RemoteAnnounced | CustomOutputState::AwaitingRemoteRevoke = custom_output.state {
+			if let CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) | CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput)
+			| CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = &custom_output.state {
 				included_custom_outputs.push(custom_output_in_tx);
 				log_trace!(
 					logger,
@@ -1688,29 +1717,26 @@ impl<Signer: Sign> Channel<Signer> {
 				);
 			}
 
-			// TODO(10101): subtract amounts from each side
 			match custom_output.state {
-				CustomOutputState::LocalAnnounced => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => {
 					from_self_custom_output_msat += custom_output.local_amount_msat;
 					from_remote_custom_output_msat += custom_output.remote_amount_msat;
 				}
-				CustomOutputState::RemoteAnnounced => {
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => {
 					from_self_custom_output_msat += custom_output.local_amount_msat;
 					from_remote_custom_output_msat += custom_output.remote_amount_msat;
 				}
-				CustomOutputState::AwaitingRemoteRevoke => {
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) => {
 					from_self_custom_output_msat += custom_output.local_amount_msat;
 					from_remote_custom_output_msat += custom_output.remote_amount_msat;
 				}
-				CustomOutputState::LocalRemoved { local_profit } | CustomOutputState::RemoteRemoved { local_profit } |
-				CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit }) | CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) | CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { local_profit }) | CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit }) | CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit })
+				=> {
 					local_settlement_profit_msat += local_profit;
 				}
-				CustomOutputState::AwaitingRemovedRemoteRevoke |
-				CustomOutputState::RemoteSettled |
-				CustomOutputState::Committed |
-				CustomOutputState::AwaitingRemoteRevokeToSettle => {
-					unimplemented!("Not used so far")
+				_ => {
+					// not needed
 				}
 			}
 		}
@@ -2581,12 +2607,12 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn get_inbound_pending_custom_output_stats(&self) -> CustomOutputInboundStats {
-		let mut sum_msats = 0;
+		let mut sum_msats = 0u64;
 		let mut sum_profit = 0;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			match output.state {
-				CustomOutputState::LocalAnnounced |
+				/*CustomOutputState::LocalAnnounced |
 				CustomOutputState::RemoteAnnounced |
 				CustomOutputState::AwaitingRemoteRevoke => {
 					sum_msats += output.remote_amount_msat;
@@ -2598,7 +2624,8 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::Committed |
 				CustomOutputState::RemoteSettled |
 				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }
+				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }*/
+				_ => todo!("Not implemented")
 			}
 		}
 
@@ -2616,12 +2643,12 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn get_outbound_pending_custom_output_stats(&self) -> CustomOutputOutboundStats {
-		let mut sum_msats = 0;
+		let mut sum_msats = 0u64;
 		let mut sum_profit = 0;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			match output.state {
-				CustomOutputState::LocalAnnounced |
+				/*CustomOutputState::LocalAnnounced |
 				CustomOutputState::RemoteAnnounced |
 				CustomOutputState::AwaitingRemoteRevoke => {
 					sum_msats += output.local_amount_msat;
@@ -2633,7 +2660,8 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::Committed |
 				CustomOutputState::RemoteSettled |
 				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }
+				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }*/
+				_ => todo!("Not implemented")
 			}
 		}
 
@@ -2716,7 +2744,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 		for (_, ref custom_output) in self.pending_custom_outputs.iter() {
 			match custom_output.state {
-				CustomOutputState::LocalAnnounced => {
+				/*CustomOutputState::LocalAnnounced => {
 					balance_msat -= custom_output.local_amount_msat;
 				}
 				CustomOutputState::RemoteAnnounced => {
@@ -2730,7 +2758,8 @@ impl<Signer: Sign> Channel<Signer> {
 				},
 				CustomOutputState::Committed | CustomOutputState::RemoteSettled | CustomOutputState::AwaitingRemoteRevokeToSettle | CustomOutputState::AwaitingRemovedRemoteRevoke => {
 					unimplemented!("Not used so far")
-				}
+				}*/
+				_ => todo!("not implemented")
 			}
 		}
 
@@ -3165,7 +3194,7 @@ impl<Signer: Sign> Channel<Signer> {
 				remote_amount_msat,
 				cltv_expiry,
 				script,
-				state: CustomOutputState::RemoteAnnounced,
+				state: CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest),
 			}
 		);
 
@@ -3199,6 +3228,21 @@ impl<Signer: Sign> Channel<Signer> {
 			));
 		}
 
+		let local_profit = (local_settlement_amount_msat as i64) - (custom_output.local_amount_msat as i64);
+		let state = match custom_output.state {
+			CustomOutputState::Alpha(_) => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved {
+					local_profit
+				})
+			}
+			CustomOutputState::Beta(_) => {
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved {
+					local_profit
+				})
+			}
+		};
+
+
 		// Now update local state:
 		self.pending_custom_outputs.insert(custom_output_id,
 			CustomOutput {
@@ -3207,9 +3251,7 @@ impl<Signer: Sign> Channel<Signer> {
 				remote_amount_msat: custom_output.remote_amount_msat,
 				cltv_expiry: custom_output.cltv_expiry,
 				script: custom_output.script.clone(),
-				state: CustomOutputState::RemoteRemoved {
-					local_profit: (local_settlement_amount_msat as i64) - (custom_output.local_amount_msat as i64)
-				},
+				state,
 			}
 		);
 
@@ -3428,16 +3470,22 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		for (_, custom_output) in self.pending_custom_outputs.iter_mut() {
 			match &custom_output.state {
-				CustomOutputState::RemoteAnnounced => {
-					log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevoke due to commitment_signed in channel {}.",
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => {
+					log_trace!(logger, "Updating CustomOutput {} to Beta::LocalCommitmentSignatureSent due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
-					custom_output.state = CustomOutputState::AwaitingRemoteRevoke;
+					custom_output.state = CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent);
 					need_commitment = true;
 				}
-				CustomOutputState::RemoteRemoved { local_profit } => {
-					log_trace!(logger, "Updating CustomOutput {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
+				CustomOutputState::Alpha (AlphaCustomOutputState::RemoteRemoved { local_profit }) => {
+					log_trace!(logger, "Updating CustomOutput {} to Alpha::AwaitingRemoteToRevokeAfterRemoval due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
-					custom_output.state = CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit: *local_profit};
+					custom_output.state = CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit: *local_profit});
+					need_commitment = true;
+				}
+				CustomOutputState::Beta (BetaCustomOutputState::RemoteRemoved { local_profit }) => {
+					log_trace!(logger, "Updating CustomOutput {} to Beta::AwaitingRemoteToRevokeAfterRemoval due to commitment_signed in channel {}.",
+					custom_output.custom_output_id, log_bytes!(self.channel_id));
+					custom_output.state = CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit: *local_profit});
 					need_commitment = true;
 				}
 				_ => {
@@ -6070,7 +6118,7 @@ impl<Signer: Sign> Channel<Signer> {
 				remote_amount_msat,
 				cltv_expiry,
 				script: script.clone(),
-				state: CustomOutputState::LocalAnnounced
+				state: CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput)
 			}
 		);
 
@@ -6116,6 +6164,12 @@ impl<Signer: Sign> Channel<Signer> {
 			return Err(ChannelError::Ignore("Cannot create custom output while things are happening".to_owned()));
 		}
 
+		let local_profit = local_settlement_amount_msat as i64 - custom_output.local_amount_msat as i64;
+		let state = match custom_output.state {
+			CustomOutputState::Alpha(_) => {CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved {local_profit})}
+			CustomOutputState::Beta(_) => {CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved {local_profit})}
+		};
+
 
 		self.pending_custom_outputs.insert(custom_output_id,
 			CustomOutput {
@@ -6124,9 +6178,7 @@ impl<Signer: Sign> Channel<Signer> {
 				remote_amount_msat: remote_settlement_amount_msat,
 				cltv_expiry: custom_output.cltv_expiry,
 				script: custom_output.script.clone(),
-				state: CustomOutputState::LocalRemoved {
-					local_profit: local_settlement_amount_msat as i64 - custom_output.local_amount_msat as i64,
-				}
+				state
 			}
 		);
 
@@ -6667,38 +6719,41 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			custom_output.remote_amount_msat.write(writer)?;
 			custom_output.cltv_expiry.write(writer)?;
 			match &custom_output.state {
-				CustomOutputState::LocalAnnounced => {
-					0u8.write(writer)?;
-				},
-				CustomOutputState::RemoteAnnounced => {
-					1u8.write(writer)?;
-				},
-				CustomOutputState::AwaitingRemoteRevoke => {
-					2u8.write(writer)?;
-				},
-				CustomOutputState::Committed => {
-					3u8.write(writer)?;
-				},
-				CustomOutputState::RemoteSettled => {
-					4u8.write(writer)?;
-				},
-				CustomOutputState::AwaitingRemoteRevokeToSettle => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => { 0u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived) => { 1u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) => { 2u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) => { 3u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) => { 4u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit }) => {
 					5u8.write(writer)?;
-				},
-				CustomOutputState::AwaitingRemovedRemoteRevoke => {
+					local_profit.write(writer)?;
+				}
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) => {
 					6u8.write(writer)?;
-				},
-				CustomOutputState::LocalRemoved { local_profit } => {
+					local_profit.write(writer)?;
+				}
+				CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
 					7u8.write(writer)?;
-					(*local_profit).write(writer)?;
+					local_profit.write(writer)?;
 				}
-				CustomOutputState::RemoteRemoved { local_profit } => {
-					8u8.write(writer)?;
-					(*local_profit).write(writer)?;
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => { 8u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) => { 9u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) => { 10u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived) => { 11u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived) => { 12u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent) => { 13u8.write(writer)?; }
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { local_profit }) => {
+					14u8.write(writer)?;
+					local_profit.write(writer)?;
 				}
-				CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
-					9u8.write(writer)?;
-					(*local_profit).write(writer)?;}
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit }) => {
+					15u8.write(writer)?;
+					local_profit.write(writer)?;
+				}
+				CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
+					16u8.write(writer)?;
+					local_profit.write(writer)?;
+				}
 			}
 		}
 
@@ -6975,24 +7030,40 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				cltv_expiry: Readable::read(reader)?,
 				script: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
-					0 => CustomOutputState::LocalAnnounced,
-					1 => CustomOutputState::RemoteAnnounced,
-					2 => CustomOutputState::AwaitingRemoteRevoke,
-					3 => CustomOutputState::Committed,
-					4 => CustomOutputState::RemoteSettled,
-					5 => CustomOutputState::AwaitingRemoteRevokeToSettle,
-					6 => CustomOutputState::AwaitingRemovedRemoteRevoke,
+					0 => CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput),
+					1 => CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived),
+					2 => CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent),
+					3 => CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent),
+					4 => CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived),
+					5 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit })
+					}
+					6 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit })
+					}
 					7 => {
 						let local_profit = Readable::read(reader)?;
-						CustomOutputState::LocalRemoved { local_profit }
+						CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit })
 					}
-					8 => {
+					8 => CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput),
+					9 => CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest),
+					10 => CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent),
+					11 => CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived),
+					12 => CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived),
+					13 => CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent),
+					14 => {
 						let local_profit = Readable::read(reader)?;
-						CustomOutputState::RemoteRemoved { local_profit }
+						CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { local_profit })
 					}
-					9 => {
+					15 => {
 						let local_profit = Readable::read(reader)?;
-						CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit }
+						CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit })
+					}
+					16 => {
+						let local_profit = Readable::read(reader)?;
+						CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit })
 					}
 					_ => return Err(DecodeError::InvalidValue),
 				},
