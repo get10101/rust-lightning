@@ -15,7 +15,7 @@
 //! few other things.
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{PaymentId, CustomOutputId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
@@ -697,6 +697,11 @@ pub enum Event {
 	/// LDK does not currently generate this event. It is limited to the scope of channels with
 	/// anchor outputs, which will be introduced in a future release.
 	BumpTransaction(BumpTransactionEvent),
+	/// TODO(10101): Add docs,
+	RemoteSentAddCustomOutputEvent {
+		/// ID.
+		custom_output_id: CustomOutputId
+	}
 }
 
 impl Writeable for Event {
@@ -860,6 +865,10 @@ impl Writeable for Event {
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
+			&Event::RemoteSentAddCustomOutputEvent { custom_output_id } => {
+				29u8.write(writer)?;
+				custom_output_id.write(writer)?; // TODO(10101): Might need to do `write_tlv_fields`
+			}
 		}
 		Ok(())
 	}

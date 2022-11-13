@@ -1005,7 +1005,7 @@ fn test_add_custom_output() {
 
 	// 1. node1 calls get_route()
 
-	let amount_node1_msat = 1_000_568;
+	let amount_node1_msat = 1_000_000;
 	let amount_node0_msat = 234_000;
 
 	// TODO: This information should be acquired differently i.e using the new APIs in `lightning-invoice`
@@ -1035,47 +1035,68 @@ fn test_add_custom_output() {
 	let custom_output_script = Script::new();
 	let custom_output_details = nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry, custom_output_script).unwrap();
 	dbg!("Node1 added custom output");
-	check_added_monitors!(nodes[1], 1);
 
 	// 3. let (update_fee, commitment_signed) = node1.get_msg_events()
 	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
-	let (_update_fee, update_add_custom_output, commitment_signed) = match events_1.as_slice() {
-		[MessageSendEvent::UpdateCommitmentOutputs {
-			updates:
-			msgs::CommitmentUpdate {
-				ref update_fee,
-				ref commitment_signed,
-				ref update_add_custom_output,
-				..
-			},
-			..
-		}] => (update_fee.as_ref(), update_add_custom_output, commitment_signed),
+	let update_add_custom_output = match events_1.as_slice() {
+		[MessageSendEvent::AddCustomOutput { msg, .. }] => msg,
 		_ => panic!("Unexpected event"),
 	};
 	dbg!("Node1 got msg events");
 
 	nodes[0]
 		.node
-		.handle_update_add_custom_output(&nodes[1].node.get_our_node_id(), &update_add_custom_output[0]);
+		.handle_update_add_custom_output(&nodes[1].node.get_our_node_id(), &update_add_custom_output);
+	dbg!("Node0 handled update_add_custom_output");
 
-	nodes[0]
-		.node
-		.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
-	dbg!("Node0 handled commitment signed");
-	check_added_monitors!(nodes[0], 1);
+	// nodes[0]
+	//	.node
+	//	.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+	// dbg!("Node0 handled commitment signed");
+	// check_added_monitors!(nodes[0], 1);
+
+	let node0_local_events = nodes[0].node.get_and_clear_pending_events();
+	let custom_output_id = match node0_local_events.as_slice() {
+		[Event::RemoteSentAddCustomOutputEvent { custom_output_id }] => custom_output_id,
+		_ => panic!("Unexpected event"),
+	};
+	dbg!("Node0 got custom_output_id from local event");
+
+	let custom_output_details_node0 = nodes[0].node.continue_remote_add_custom_output(*custom_output_id).unwrap();
 
 	// 6. let (revoke_and_ack, commitment_signed) = node0.get_msg_events()
-	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
+	let commitment_signed = match events_0.as_slice() {
+		[MessageSendEvent::UpdateCommitmentOutputs { updates, .. }] => updates.commitment_signed.clone(),
+		_ => panic!("Unexpected event"),
+	};
+	dbg!("Node0 about to send commitment signed");
+
+	// 7. node1.handle_commitment_signed(commitment_signed)
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
+	dbg!("Node1 handled commitment signed");
+	check_added_monitors!(nodes[1], 1);
+
+	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_1.len(), 2);
+	let commitment_signed = match events_1.as_slice() {
+		[MessageSendEvent::UpdateCommitmentOutputs { updates, .. }] => updates.commitment_signed.clone(),
+		unexpected_events => {
+			dbg!(unexpected_events);
+			panic!("Unexpected event")
+		},
+	};
+	dbg!("Node1 about to send commitment signed"); // We have to be interactive here
+
+	todo!();
+
 	// 7. node1.handle_revoke_and_ack(revoke_and_ack)
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke);
 	dbg!("Node1 handled revoke and ack");
 	check_added_monitors!(nodes[1], 1);
 
-	// 8. node1.handle_commitment_signed(commitment_signed)
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
-	dbg!("Node1 handled commitment signed");
-	check_added_monitors!(nodes[1], 1);
+
 
 	// 9. let revoke_and_ack = node1.get_msg_events()
 	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());

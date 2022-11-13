@@ -49,11 +49,11 @@ use crate::ln::features::InvoiceFeatures;
 use crate::routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
+use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use crate::util::config::{UserConfig, ChannelConfig};
-use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, Event};
 use crate::util::{byte_utils, events};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -535,10 +535,11 @@ pub(crate) enum PendingOutboundPayment {
 #[derive(Debug)]
 struct CustomOutput {
 	channel_id: [u8;32],
-	short_channel_id: u64,
 	local_amount_msat: u64,
 	remote_amount_msat: u64,
-	script: Script
+	cltv_expiry: u32,
+	script: Script,
+	counterparty_node_id: PublicKey,
 }
 
 impl PendingOutboundPayment {
@@ -802,7 +803,7 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
 
 	/// Stores alive custom outputs currently asigned to some channel
-	custom_outputs: Mutex<HashMap<CustomOutputId, CustomOutput>>,
+	custom_outputs: Mutex<HashMap<CustomOutputId, CustomOutput>>, // TODO(10101): Not sure if beta ever adds it to this enum.
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -2764,7 +2765,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		remote_amount_msat: u64,
 		cltv_expiry: u32,
 		script: Script,
-	) -> Result<CustomOutputDetails, String>	{
+	) -> Result<CustomOutputDetails, String> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_id = channel_lock
 			.short_to_chan_info
@@ -2859,11 +2860,32 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
 			channel_id,
-			short_channel_id,
 			local_amount_msat,
 			remote_amount_msat,
 			script,
+			cltv_expiry,
+			counterparty_node_id: channel.get().get_counterparty_node_id(),
 		});
+
+		Ok(custom_output_details)
+	}
+
+	pub fn continue_remote_add_custom_output(
+		&self,
+		custom_output_id: CustomOutputId,
+	) -> Result<CustomOutputDetails, String> {
+		let custom_outputs = self.custom_outputs.lock().unwrap();
+		let CustomOutput { channel_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, counterparty_node_id } = custom_outputs.get(&custom_output_id).unwrap();
+
+		let custom_output_details = self.internal_continue_remote_add_custom_output(
+			counterparty_node_id,
+			*channel_id,
+			custom_output_id,
+			*local_amount_msat,
+			*remote_amount_msat,
+			*cltv_expiry,
+			script.clone()
+		).map_err(|e| format!("Failed to continue with add custom output protocol initiated by remote: {:?}", e.err))?;
 
 		Ok(custom_output_details)
 	}
@@ -5120,21 +5142,55 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
-	fn internal_update_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<(), MsgHandleErrInternal> {
+	fn internal_update_receive_add_custom_output_request(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<(), MsgHandleErrInternal> {
+		// Stored to remember once receiver is ready to continue with the protocol
+		self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
+			channel_id,
+			local_amount_msat,
+			remote_amount_msat,
+			script,
+			cltv_expiry,
+			counterparty_node_id: counterparty_node_id.clone()
+		});
+
+		self.pending_events.lock().unwrap().push(Event::RemoteSentAddCustomOutputEvent { custom_output_id });
+
+		Ok(())
+	}
+
+	fn internal_continue_remote_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<CustomOutputDetails, MsgHandleErrInternal> {
 		let mut channel_holder = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_holder;
 
-		match channel_state.by_id.entry(channel_id) {
+		let (custom_output_details, commitment_signed) = match channel_state.by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut channel) => {
 				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
 				}
-				try_chan_entry!(self, channel.get_mut().update_add_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, &self.logger), channel_state, channel);
+				let (custom_output_details, commiment_signed, monitor_update) = try_chan_entry!(self, channel.get_mut().continue_remote_add_custom_output_and_commit(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, &self.logger), channel_state, channel);
+
+				// TODO(10101): Handle update_err properly
+				let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+
+				(custom_output_details, commiment_signed)
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
-		}
+		};
 
-		Ok(())
+
+
+		channel_state.pending_msg_events.push(MessageSendEvent::UpdateCommitmentOutputs { node_id: *counterparty_node_id, updates: CommitmentUpdate {
+			update_add_htlcs: vec![],
+			update_fulfill_htlcs: vec![],
+			update_fail_htlcs: vec![],
+			update_fail_malformed_htlcs: vec![],
+			update_fee: None,
+			commitment_signed,
+			update_add_custom_output: vec![], // TODO(10101): Is this okay?
+			update_remove_custom_output: vec![],
+		} });
+
+		Ok(custom_output_details)
 	}
 
 
@@ -6341,7 +6397,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 		let local_amount_msat = receiver_amount_msat;
 		let remote_amount_msat = sender_amount_msat;
 
-		let _ = handle_error!(self, self.internal_update_add_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script), *counterparty_node_id);
+		let _ = handle_error!(self, self.internal_update_receive_add_custom_output_request(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script), *counterparty_node_id);
 	}
 
 	fn handle_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateRemoveCustomOutput) {
@@ -6926,10 +6982,11 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 
 impl_writeable_tlv_based!(CustomOutput, {
 	(0, channel_id, required),
-	(2, short_channel_id, required),
-	(4, local_amount_msat, required),
-	(6, remote_amount_msat, required),
+	(2, local_amount_msat, required),
+	(4, remote_amount_msat, required),
+	(6, cltv_expiry, required),
 	(8, script, required),
+	(10, counterparty_node_id, required),
 });
 
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,

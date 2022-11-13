@@ -1706,7 +1706,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// assume custom output is > dust limit + associated tx fee, therefore always include
 
 			if let CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) | CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput)
-			| CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = &custom_output.state {
+				| CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) | CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = &custom_output.state {
 				included_custom_outputs.push(custom_output_in_tx);
 				log_trace!(
 					logger,
@@ -1718,15 +1718,12 @@ impl<Signer: Sign> Channel<Signer> {
 			}
 
 			match custom_output.state {
-				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => {
-					from_self_custom_output_msat += custom_output.local_amount_msat;
-					from_remote_custom_output_msat += custom_output.remote_amount_msat;
-				}
-				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => {
-					from_self_custom_output_msat += custom_output.local_amount_msat;
-					from_remote_custom_output_msat += custom_output.remote_amount_msat;
-				}
-				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Beta(
+					BetaCustomOutputState::ReceivedAddCustomOutputRequest |
+					BetaCustomOutputState::LocalAddedCustomOutput |
+					BetaCustomOutputState::LocalCommitmentSignatureSent
+				) => {
 					from_self_custom_output_msat += custom_output.local_amount_msat;
 					from_remote_custom_output_msat += custom_output.remote_amount_msat;
 				}
@@ -3148,7 +3145,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn update_add_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script, _logger: &L) -> Result<(), ChannelError>
+	pub fn update_add_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script, logger: &L) -> Result<CustomOutputDetails, ChannelError>
 	where L::Target: Logger {
 		// We can't accept HTLCs sent after we've sent a shutdown.
 		let local_sent_shutdown = (self.channel_state & (ChannelState::ChannelFunded as u32 | ChannelState::LocalShutdownSent as u32)) != (ChannelState::ChannelFunded as u32);
@@ -3193,12 +3190,49 @@ impl<Signer: Sign> Channel<Signer> {
 				local_amount_msat,
 				remote_amount_msat,
 				cltv_expiry,
-				script,
+				script: script.clone(),
 				state: CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest),
 			}
 		);
 
-		Ok(())
+		let (outpoint_commit_local, amount) = {
+			let keys_local = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+			let commitment_stats_local = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_local, true, true, logger);
+
+			let custom_output_local = commitment_stats_local.tx.custom_outputs.iter().find(|output| output.id == custom_output_id).unwrap();
+
+			let outpoint = OutPoint {
+				txid: commitment_stats_local.tx.built.txid,
+				index: custom_output_local.transaction_output_index.unwrap() as u16,
+			};
+			let amount = (custom_output_local.local_amount_msat + custom_output_local.remote_amount_msat) / 1000;
+
+			(outpoint, amount)
+		};
+
+		let outpoint_commit_remote = {
+			let keys_remote = self.build_remote_transaction_keys()?;
+			let commitment_stats_remote = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_remote, false, true, logger);
+
+			let custom_output_remote = commitment_stats_remote.tx.custom_outputs.iter().find(|output| output.id == custom_output_id).unwrap();
+
+			OutPoint {
+				txid: commitment_stats_remote.tx.built.txid,
+				index: custom_output_remote.transaction_output_index.unwrap() as u16,
+			}
+		};
+
+		let script_to_sign = script; // TODO(10101): We think this is wrong.
+
+		let custom_output_details = CustomOutputDetails {
+			id: custom_output_id,
+			outpoint_commit_local,
+			outpoint_commit_remote,
+			script: script_to_sign,
+			amount,
+		};
+
+		Ok(custom_output_details)
 	}
 
 	pub fn update_remove_custom_output<L: Deref>(&mut self, _channel_id: [u8; 32], custom_output_id: CustomOutputId, local_settlement_amount_msat: u64, remote_settlement_amount_msat: u64, _logger: &L) -> Result<(), ChannelError>
@@ -3470,19 +3504,27 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		for (_, custom_output) in self.pending_custom_outputs.iter_mut() {
 			match &custom_output.state {
+				// TODO(10101): Must change match arm to RemoteCommitmentSignatureReceived, only like this for testing
+				// This should be possible after we make that part interactive for Alpha
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => {
+					log_trace!(logger, "Updating CustomOutput {} to Alpha::RemoteCommitmentSignatureReceived due to commitment_signed in channel {}.",
+						   custom_output.custom_output_id, log_bytes!(self.channel_id));
+					custom_output.state = CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent);
+					need_commitment = true;
+				}
 				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => {
 					log_trace!(logger, "Updating CustomOutput {} to Beta::LocalCommitmentSignatureSent due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
 					custom_output.state = CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent);
 					need_commitment = true;
 				}
-				CustomOutputState::Alpha (AlphaCustomOutputState::RemoteRemoved { local_profit }) => {
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) => {
 					log_trace!(logger, "Updating CustomOutput {} to Alpha::AwaitingRemoteToRevokeAfterRemoval due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
 					custom_output.state = CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit: *local_profit});
 					need_commitment = true;
 				}
-				CustomOutputState::Beta (BetaCustomOutputState::RemoteRemoved { local_profit }) => {
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit }) => {
 					log_trace!(logger, "Updating CustomOutput {} to Beta::AwaitingRemoteToRevokeAfterRemoval due to commitment_signed in channel {}.",
 					custom_output.custom_output_id, log_bytes!(self.channel_id));
 					custom_output.state = CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit: *local_profit});
@@ -6367,33 +6409,62 @@ impl<Signer: Sign> Channel<Signer> {
 	pub fn add_custom_output_and_build_commits<L: Deref>(
 		&mut self,
 		custom_output_id: CustomOutputId,
-		amount_us_msat: u64,
-		amount_counterparty_msat: u64,
+		local_amount_msat: u64,
+		remote_amount_msat: u64,
 		cltv_expiry: u32,
 		script: Script,
 		logger: &L
 	) -> Result<(CustomOutputDetails, msgs::UpdateAddCustomOutput), ChannelError> where L::Target: Logger {
-		let update_add_custom_output = self.add_custom_output(custom_output_id, amount_us_msat, amount_counterparty_msat, cltv_expiry, script, logger)?;
+		let update_add_custom_output = self.add_custom_output(custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script.clone(), logger)?;
 
-		let keys_local = self.build_holder_transaction_keys(todo!("commitment number"))?;
-		let commitment_stats_local = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_local, true, true, logger);
-		let keys_remote = self.build_remote_transaction_keys()?;
-		let commitment_stats_remote = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_remote, false, true, logger);
+		let (outpoint_commit_local, amount) = {
+			let keys_local = self.build_holder_transaction_keys(self.cur_holder_commitment_transaction_number)?;
+			let commitment_stats_local = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_local, true, true, logger);
 
-		// TODO: Continue here
-		// let mut custom_output_details_list = Vec::new();
-		// for custom_output in commitment_stats.tx.custom_outputs.iter() {
-		//	let script_to_sign = custom_output.script.clone(); // TODO(10101): We think this is wrong.
-		//	let amount = (custom_output.local_amount_msat + custom_output.remote_amount_msat) / 1000;
-		//	let outpoint = OutPoint {
-		//		txid: commitment_stats.tx.built.txid,
-		//		index: custom_output.transaction_output_index.unwrap() as u16
-		//	};
+			let custom_output_local = commitment_stats_local.tx.custom_outputs.iter().find(|output| output.id == custom_output_id).unwrap();
 
-		//	custom_output_details_list.push(CustomOutputDetails { id: custom_output.id, outpoint, script: script_to_sign, amount });
-		// }
+			let outpoint = OutPoint {
+				txid: commitment_stats_local.tx.built.txid,
+				index: custom_output_local.transaction_output_index.unwrap() as u16,
+			};
+			let amount = (custom_output_local.local_amount_msat + custom_output_local.remote_amount_msat) / 1000;
 
-		Ok((todo!(), update_add_custom_output))
+			(outpoint, amount)
+		};
+
+		let outpoint_commit_remote = {
+			let keys_remote = self.build_remote_transaction_keys()?;
+			let commitment_stats_remote = self.build_commitment_transaction(self.cur_counterparty_commitment_transaction_number, &keys_remote, false, true, logger);
+
+			let custom_output_remote = commitment_stats_remote.tx.custom_outputs.iter().find(|output| output.id == custom_output_id).unwrap();
+
+			OutPoint {
+				txid: commitment_stats_remote.tx.built.txid,
+				index: custom_output_remote.transaction_output_index.unwrap() as u16,
+			}
+		};
+
+		let script_to_sign = script; // TODO(10101): We think this is wrong.
+
+		let custom_output_details = CustomOutputDetails {
+			id: custom_output_id,
+			outpoint_commit_local,
+			outpoint_commit_remote,
+			script: script_to_sign,
+			amount,
+		};
+
+		Ok((custom_output_details, update_add_custom_output))
+	}
+
+	pub fn continue_remote_add_custom_output_and_commit<L: Deref>(
+		&mut self, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64,
+		remote_amount_msat: u64, cltv_expiry: u32, script: Script, logger: &L
+	) -> Result<(CustomOutputDetails, msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger {
+		let custom_output_details = self.update_add_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, logger)?;
+		let (commitment_signed, monitor_update) = self.send_commitment_no_status_check(logger)?;
+
+		Ok((custom_output_details, commitment_signed, monitor_update))
 	}
 
 	pub fn remove_custom_output_and_commit<L: Deref>(&mut self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64, logger: &L) -> Result<(msgs::UpdateRemoveCustomOutput, msgs::CommitmentSigned, ChannelMonitorUpdate), ChannelError> where L::Target: Logger{
