@@ -72,6 +72,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
 
+use super::channel::{ShouldRevoke, DidRemoteSendCustomOutputCommitmentSignature};
+use super::msgs::{CommitmentSigned, RevokeAndACK};
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -198,6 +201,7 @@ pub struct PaymentId(pub [u8; 32]);
 pub struct CustomOutputId(pub [u8; 32]);
 
 /// How to use a custom output as an input in another transaction.
+/// TODO(10101): Add sighash for both commitment transaction.
 #[derive(Clone, Debug)]
 pub struct CustomOutputDetails {
 	/// Unique identifier for the custom output.
@@ -2890,6 +2894,38 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(custom_output_details)
 	}
 
+	pub fn manual_send_commitment_signed(
+		&self,
+		pk_counterparty: PublicKey,
+		commitment_signed: CommitmentSigned,
+		revoke_and_ack: RevokeAndACK,
+	) -> Result<(), String> {
+		let mut channel_holder = self.channel_state.lock().unwrap();
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+			node_id: pk_counterparty,
+			updates: CommitmentUpdate {
+				update_add_htlcs: Vec::new(),
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
+				commitment_signed,
+				update_add_custom_output: Vec::new(),
+				update_remove_custom_output: Vec::new(),
+			}
+		});
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+			node_id: pk_counterparty,
+			msg: revoke_and_ack,
+		});
+
+		// TODO(10101): Move channel state forward?
+
+		Ok(())
+	}
+
 	/// Remove custom output from channel
 	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64) -> Result<(), RemoveCustomOutputError> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
@@ -5271,7 +5307,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, monitor_update) =
+				let (revoke_and_ack, commitment_signed, monitor_update, should_revoke, did_remote_send_custom_output_commitment_sig) =
 					match chan.get_mut().commitment_signed(&msg, &self.logger) {
 						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
 						Err((Some(update), e)) => {
@@ -5287,24 +5323,39 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return Err(e);
 				}
 
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-					node_id: counterparty_node_id.clone(),
-					msg: revoke_and_ack,
-				});
-				if let Some(msg) = commitment_signed {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+
+
+				if let ShouldRevoke::Yes = should_revoke {
+					dbg!("Should revoke");
+
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 						node_id: counterparty_node_id.clone(),
-						updates: msgs::CommitmentUpdate {
-							update_add_htlcs: Vec::new(),
-							update_fulfill_htlcs: Vec::new(),
-							update_fail_htlcs: Vec::new(),
-							update_fail_malformed_htlcs: Vec::new(),
-							update_fee: None,
-							commitment_signed: msg,
-							update_add_custom_output: Vec::new(),
-							update_remove_custom_output: Vec::new()
-						},
+						msg: revoke_and_ack.clone(),
 					});
+				}
+
+				if let Some(commitment_signed) = commitment_signed {
+					if let DidRemoteSendCustomOutputCommitmentSignature::Yes = did_remote_send_custom_output_commitment_sig {
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push(Event::RemoteSentCustomOutputCommitmentSignature {
+							commitment_signed,
+							revoke_and_ack
+						});
+					} else {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+							node_id: counterparty_node_id.clone(),
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: Vec::new(),
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
+								commitment_signed,
+								update_add_custom_output: Vec::new(),
+								update_remove_custom_output: Vec::new()
+							},
+						});
+					}
 				}
 				Ok(())
 			},

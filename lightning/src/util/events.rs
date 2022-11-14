@@ -18,7 +18,7 @@ use crate::chain::keysinterface::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{PaymentId, CustomOutputId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::msgs::{self, CommitmentSigned, RevokeAndACK};
 use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
@@ -697,11 +697,23 @@ pub enum Event {
 	/// LDK does not currently generate this event. It is limited to the scope of channels with
 	/// anchor outputs, which will be introduced in a future release.
 	BumpTransaction(BumpTransactionEvent),
-	/// TODO(10101): Add docs,
+	/// The remote node sent a request to add a custom output.
+	///
+	/// We expect the library consumer to verify signatures based on the custom output on the
+	/// application layer, before they continue with the protocol.
 	RemoteSentAddCustomOutputEvent {
-		/// ID.
+		/// Custom output ID.
 		custom_output_id: CustomOutputId
-	}
+	},
+	/// The remote node sent their signature for a commitment transaction which includes at
+	/// least one custom output.
+	///
+	/// We expect the library consumer to verify signatures based on the custom output, on the
+	/// application layer before they send their own commitment signature to the remote node.
+	RemoteSentCustomOutputCommitmentSignature {
+		commitment_signed: CommitmentSigned,
+		revoke_and_ack: RevokeAndACK,
+	},
 }
 
 impl Writeable for Event {
@@ -867,7 +879,19 @@ impl Writeable for Event {
 			// data via `write_tlv_fields`.
 			&Event::RemoteSentAddCustomOutputEvent { custom_output_id } => {
 				29u8.write(writer)?;
-				custom_output_id.write(writer)?; // TODO(10101): Might need to do `write_tlv_fields`
+				write_tlv_fields!(writer, {
+					(0, custom_output_id, required),
+				})
+			}
+			&Event::RemoteSentCustomOutputCommitmentSignature { ref commitment_signed, ref revoke_and_ack  } => {
+				let commitment_signed = commitment_signed.clone();
+				let revoke_and_ack = revoke_and_ack.clone();
+
+				31u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, commitment_signed, required),
+					(2, revoke_and_ack, required),
+				})
 			}
 		}
 		Ok(())
@@ -1146,6 +1170,36 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			29u8 => {
+				let f = || {
+					let mut custom_output_id = CustomOutputId([0; 32]);
+					read_tlv_fields!(reader, {
+						(0, custom_output_id, required)
+					});
+					Ok(Some(Event::RemoteSentAddCustomOutputEvent { custom_output_id }))
+				};
+				f()
+			}
+			31u8 => {
+				let f = || {
+					let mut commitment_signed = CommitmentSigned {
+						channel_id: [0; 32],
+						signature: bitcoin::secp256k1::ecdsa::Signature::from_compact(&[0;64]).unwrap(),
+						htlc_signatures: Vec::new()
+					};
+					let mut revoke_and_ack = RevokeAndACK {
+						channel_id: [0; 32],
+						per_commitment_secret: [0; 32],
+						next_per_commitment_point: PublicKey::from_slice(&[0;64]).unwrap(),
+					};
+					read_tlv_fields!(reader, {
+						(0, commitment_signed, required),
+						(0, revoke_and_ack, required)
+					});
+					Ok(Some(Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack  }))
+				};
+				f()
+			}
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

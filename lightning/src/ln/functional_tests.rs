@@ -1003,6 +1003,12 @@ fn test_add_custom_output() {
 
 	dbg!("Hello");
 
+	// Node1 starts, is the taker.
+	// Node0 responds, is the maker.
+
+	let taker = &nodes[1];
+	let maker = &nodes[0];
+
 	// 1. node1 calls get_route()
 
 	let amount_node1_msat = 1_000_000;
@@ -1010,10 +1016,10 @@ fn test_add_custom_output() {
 
 	// TODO: This information should be acquired differently i.e using the new APIs in `lightning-invoice`
 	let route_to_node0 = get_route!(
-		nodes[1],
+		taker,
 		// Should we be reusing `PaymentParameters`? We only want to support trivial routing at
 		// this stage
-		PaymentParameters::from_node_id(nodes[0].node.get_our_node_id()),
+		PaymentParameters::from_node_id(maker.node.get_our_node_id()),
 		amount_node1_msat + amount_node0_msat,
 		TEST_FINAL_CLTV
 	)
@@ -1033,11 +1039,11 @@ fn test_add_custom_output() {
 
 	// 2. node1.add_custom_output() (similar to send_payment()?)
 	let custom_output_script = Script::new();
-	let custom_output_details = nodes[1].node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry, custom_output_script).unwrap();
+	let custom_output_details = taker.node.add_custom_output(short_channel_id, pk_counterparty, amount_node1_msat, amount_node0_msat, cltv_expiry, custom_output_script).unwrap();
 	dbg!("Node1 added custom output");
 
 	// 3. let (update_fee, commitment_signed) = node1.get_msg_events()
-	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	let events_1 = taker.node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
 	let update_add_custom_output = match events_1.as_slice() {
 		[MessageSendEvent::AddCustomOutput { msg, .. }] => msg,
@@ -1045,28 +1051,30 @@ fn test_add_custom_output() {
 	};
 	dbg!("Node1 got msg events");
 
-	nodes[0]
+	maker
 		.node
-		.handle_update_add_custom_output(&nodes[1].node.get_our_node_id(), &update_add_custom_output);
+		.handle_update_add_custom_output(&taker.node.get_our_node_id(), &update_add_custom_output);
 	dbg!("Node0 handled update_add_custom_output");
 
-	// nodes[0]
+	// maker
 	//	.node
-	//	.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+	//	.handle_commitment_signed(&taker.node.get_our_node_id(), commitment_signed);
 	// dbg!("Node0 handled commitment signed");
-	// check_added_monitors!(nodes[0], 1);
+	// check_added_monitors!(maker, 1);
 
-	let node0_local_events = nodes[0].node.get_and_clear_pending_events();
+	let node0_local_events = maker.node.get_and_clear_pending_events();
 	let custom_output_id = match node0_local_events.as_slice() {
 		[Event::RemoteSentAddCustomOutputEvent { custom_output_id }] => custom_output_id,
 		_ => panic!("Unexpected event"),
 	};
 	dbg!("Node0 got custom_output_id from local event");
 
-	let custom_output_details_node0 = nodes[0].node.continue_remote_add_custom_output(*custom_output_id).unwrap();
+	// CETs are exchanged at the application level here.
+
+	let custom_output_details_node0 = maker.node.continue_remote_add_custom_output(*custom_output_id).unwrap();
 
 	// 6. let (revoke_and_ack, commitment_signed) = node0.get_msg_events()
-	let events_0 = nodes[0].node.get_and_clear_pending_msg_events();
+	let events_0 = maker.node.get_and_clear_pending_msg_events();
 	let commitment_signed = match events_0.as_slice() {
 		[MessageSendEvent::UpdateCommitmentOutputs { updates, .. }] => updates.commitment_signed.clone(),
 		_ => panic!("Unexpected event"),
@@ -1074,50 +1082,62 @@ fn test_add_custom_output() {
 	dbg!("Node0 about to send commitment signed");
 
 	// 7. node1.handle_commitment_signed(commitment_signed)
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
+	taker.node.handle_commitment_signed(&maker.node.get_our_node_id(), &commitment_signed);
 	dbg!("Node1 handled commitment signed");
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors!(taker, 1);
 
-	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(events_1.len(), 2);
-	let commitment_signed = match events_1.as_slice() {
-		[MessageSendEvent::UpdateCommitmentOutputs { updates, .. }] => updates.commitment_signed.clone(),
+	let events_1 = taker.node.get_and_clear_pending_msg_events();
+	assert_eq!(events_1.len(), 0);
+
+	let taker_local_events = taker.node.get_and_clear_pending_events();
+	let (commitment_signed, revoke_and_ack) = match taker_local_events.as_slice() {
+		[Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack }] => (commitment_signed, revoke_and_ack),
+		_ => panic!("Unexpected event"),
+	};
+	dbg!("Taker was told that maker sent commitment signature");
+
+	taker.node.manual_send_commitment_signed(maker.node.get_our_node_id(), commitment_signed.clone(), revoke_and_ack.clone()).unwrap();
+	dbg!("Taker manual commit");
+
+	let events_taker = taker.node.get_and_clear_pending_msg_events();
+	assert_eq!(events_taker.len(), 2);
+
+	let (commitment_signed, revoke_and_ack) = match events_taker.as_slice() {
+		[MessageSendEvent::UpdateCommitmentOutputs { updates, .. },
+		 MessageSendEvent::SendRevokeAndACK { msg, .. }] => (updates.commitment_signed.clone(), msg.clone()),
 		unexpected_events => {
 			dbg!(unexpected_events);
 			panic!("Unexpected event")
 		},
 	};
-	dbg!("Node1 about to send commitment signed"); // We have to be interactive here
+	dbg!("Taker about to send commitment signed and RAA");
 
-	todo!();
+	maker.node.handle_revoke_and_ack(&taker.node.get_our_node_id(), &revoke_and_ack);
+	maker.node.handle_commitment_signed(&taker.node.get_our_node_id(), &commitment_signed);
 
-	// 7. node1.handle_revoke_and_ack(revoke_and_ack)
-	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke);
-	dbg!("Node1 handled revoke and ack");
-	check_added_monitors!(nodes[1], 1);
+	dbg!("Taker sent commitment signed and RAA");
 
+	let revoke_and_ack_maker = get_event_msg!(maker, MessageSendEvent::SendRevokeAndACK, taker.node.get_our_node_id());
 
+	// 7. taker.handle_revoke_and_ack(revoke_and_ack)
+	taker.node.handle_revoke_and_ack(&maker.node.get_our_node_id(), &revoke_and_ack);
+	dbg!("Taker handled revoke and ack");
 
-	// 9. let revoke_and_ack = node1.get_msg_events()
-	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	check_added_monitors!(taker, 1);
 
-	// 10. node0.handle_revoke_and_ack(revoke_and_ack)
-	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke);
-	check_added_monitors!(nodes[0], 1);
-	// 11. let custom_output_created = node0.get_pending_events()
-	// 12. let custom_output_created = node1.get_pending_events()
+	assert_eq!(taker.node.get_and_clear_pending_msg_events().len(), 0);
 
 	dbg!("Custom output added");
 
 	// Let's remove the custom output collaboratively
 
 	let full_amount = amount_node0_msat + amount_node1_msat;
-	nodes[1].node.remove_custom_output(custom_output_details.id, full_amount / 2, full_amount / 2).unwrap();
+	taker.node.remove_custom_output(custom_output_details.id, full_amount / 2, full_amount / 2).unwrap();
 
 	dbg!("Node 1 called `remove_custom_outputs`");
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors!(taker, 1);
 
-	let events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	let events_1 = taker.node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 1);
 	let (_update_fee, update_remove_custom_output, commitment_signed) = match events_1.as_slice() {
 		[MessageSendEvent::UpdateCommitmentOutputs {
@@ -1135,41 +1155,41 @@ fn test_add_custom_output() {
 
 	dbg!("Node1 got msg events to remove custom output");
 
-	nodes[0]
+	maker
 		.node
-		.handle_update_remove_custom_output(&nodes[1].node.get_our_node_id(), &update_remove_custom_output[0]);
+		.handle_update_remove_custom_output(&taker.node.get_our_node_id(), &update_remove_custom_output[0]);
 
-	nodes[0]
+	maker
 		.node
-		.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+		.handle_commitment_signed(&taker.node.get_our_node_id(), commitment_signed);
 	dbg!("Node0 handled commitment after remove signed");
-	check_added_monitors!(nodes[0], 1);
+	check_added_monitors!(maker, 1);
 
-	let (revoke, commitment_signed) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	let (revoke, commitment_signed) = get_revoke_commit_msgs!(maker, taker.node.get_our_node_id());
 
-	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &revoke);
+	taker.node.handle_revoke_and_ack(&maker.node.get_our_node_id(), &revoke);
 	dbg!("Node1 handled revoke and ack for remove");
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors!(taker, 1);
 
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &commitment_signed);
+	taker.node.handle_commitment_signed(&maker.node.get_our_node_id(), &commitment_signed);
 	dbg!("Node1 handled commitment signed for remove");
-	check_added_monitors!(nodes[1], 1);
+	check_added_monitors!(taker, 1);
 
-	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	let revoke = get_event_msg!(taker, MessageSendEvent::SendRevokeAndACK, maker.node.get_our_node_id());
 
 	// 10. node0.handle_revoke_and_ack(revoke_and_ack)
-	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &revoke);
-	check_added_monitors!(nodes[0], 1);
+	maker.node.handle_revoke_and_ack(&taker.node.get_our_node_id(), &revoke);
+	check_added_monitors!(maker, 1);
 
 	dbg!("Custom output removed");
 
-	claim_payment(&nodes[1], &vec!(&nodes[0])[..], our_payment_preimage);
+	claim_payment(&taker, &vec!(maker)[..], our_payment_preimage);
 
-	send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
-	send_payment(&nodes[0], &vec!(&nodes[1])[..], 800000);
-	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure);
+	send_payment(taker, &vec!(maker)[..], 800000);
+	send_payment(maker, &vec!(taker)[..], 800000);
+	close_channel(maker, taker, &chan.2, chan.3, true);
+	check_closed_event!(maker, 1, ClosureReason::CooperativeClosure);
+	check_closed_event!(taker, 1, ClosureReason::CooperativeClosure);
 }
 
 #[test]
@@ -9213,7 +9233,7 @@ fn test_update_err_monitor_lockdown() {
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok((_, _, update, _, _)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			assert_eq!(watchtower.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(nodes[0].chain_monitor.update_channel(outpoint, update), ChannelMonitorUpdateStatus::Completed);
 		} else { assert!(false); }
@@ -9304,7 +9324,7 @@ fn test_concurrent_monitor_claim() {
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	if let Some(ref mut channel) = nodes[0].node.channel_state.lock().unwrap().by_id.get_mut(&chan_1.2) {
-		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
+		if let Ok((_, _, update, _, _)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			assert_eq!(watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::PermanentFailure);
 			assert_eq!(watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()), ChannelMonitorUpdateStatus::Completed);

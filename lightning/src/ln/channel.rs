@@ -243,7 +243,7 @@ enum CustomOutputState {
 #[derive(PartialEq, Debug)]
 enum AlphaCustomOutputState {
 	LocalAddedCustomOutput,
-	RemoteCommitmentSignatureReceived,
+	ReceivedRemoteCommitmentSignature,
 	LocalCommitmentSignatureSent,
 	RevokeAndAckSent,
 	RevokeAndAckReceived,
@@ -373,6 +373,16 @@ pub(super) enum ChannelUpdateStatus {
 	EnabledStaged,
 	/// We've announced the channel as disabled.
 	Disabled,
+}
+
+pub enum ShouldRevoke {
+	Yes,
+	No
+}
+
+pub enum DidRemoteSendCustomOutputCommitmentSignature {
+	Yes,
+	No
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
@@ -1669,7 +1679,7 @@ impl<Signer: Sign> Channel<Signer> {
 			let state_name = match &custom_output.state {
 				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { .. }) => { "AlphaRemoteRemoved" }
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => { "AlphaLocalAddedCustomOutput" }
-				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived) => { "AlphaRemoteCommitmentSignatureReceived" }
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) => { "AlphaRemoteCommitmentSignatureReceived" }
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) => { "AlphaLocalCommitmentSignatureSent" }
 				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) => { "AlphaRevokeAndAckSent" }
 				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) => { "AlphaRevokeAndAckReceived" }
@@ -1705,8 +1715,12 @@ impl<Signer: Sign> Channel<Signer> {
 
 			// assume custom output is > dust limit + associated tx fee, therefore always include
 
-			if let CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) | CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput)
-				| CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) | CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = &custom_output.state {
+			if let CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+			CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) |
+			CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) |
+			CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) |
+			CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) |
+			CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = dbg!(&custom_output.state) {
 				included_custom_outputs.push(custom_output_in_tx);
 				log_trace!(
 					logger,
@@ -1719,6 +1733,7 @@ impl<Signer: Sign> Channel<Signer> {
 
 			match custom_output.state {
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) |
 				CustomOutputState::Beta(
 					BetaCustomOutputState::ReceivedAddCustomOutputRequest |
 					BetaCustomOutputState::LocalAddedCustomOutput |
@@ -3358,7 +3373,7 @@ impl<Signer: Sign> Channel<Signer> {
 		Ok(())
 	}
 
-	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitorUpdate), (Option<ChannelMonitorUpdate>, ChannelError)>
+	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<(msgs::RevokeAndACK, Option<msgs::CommitmentSigned>, ChannelMonitorUpdate, ShouldRevoke, DidRemoteSendCustomOutputCommitmentSignature), (Option<ChannelMonitorUpdate>, ChannelError)>
 		where L::Target: Logger
 	{
 		if (self.channel_state & (ChannelState::ChannelFunded as u32)) != (ChannelState::ChannelFunded as u32) {
@@ -3464,6 +3479,8 @@ impl<Signer: Sign> Channel<Signer> {
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
+		let mut should_revoke = ShouldRevoke::Yes;
+		let mut did_remote_send_custom_output_commitment_sig = DidRemoteSendCustomOutputCommitmentSignature::No;
 		if let &mut Some((_, ref mut update_state)) = &mut self.pending_update_fee {
 			if *update_state == FeeUpdateState::RemoteAnnounced {
 				*update_state = FeeUpdateState::AwaitingRemoteRevokeToAnnounce;
@@ -3504,13 +3521,20 @@ impl<Signer: Sign> Channel<Signer> {
 		}
 		for (_, custom_output) in self.pending_custom_outputs.iter_mut() {
 			match &custom_output.state {
-				// TODO(10101): Must change match arm to RemoteCommitmentSignatureReceived, only like this for testing
-				// This should be possible after we make that part interactive for Alpha
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => {
 					log_trace!(logger, "Updating CustomOutput {} to Alpha::RemoteCommitmentSignatureReceived due to commitment_signed in channel {}.",
 						   custom_output.custom_output_id, log_bytes!(self.channel_id));
+					custom_output.state = CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature);
+					need_commitment = true;
+					should_revoke = ShouldRevoke::No;
+					did_remote_send_custom_output_commitment_sig = DidRemoteSendCustomOutputCommitmentSignature::Yes;
+				}
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) => {
+					log_trace!(logger, "Updating CustomOutput {} to Alpha::LocalCommitmentSignatureSent due to commitment_signed in channel {}.",
+						   custom_output.custom_output_id, log_bytes!(self.channel_id));
 					custom_output.state = CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent);
 					need_commitment = true;
+					should_revoke = ShouldRevoke::Yes;
 				}
 				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) => {
 					log_trace!(logger, "Updating CustomOutput {} to Beta::LocalCommitmentSignatureSent due to commitment_signed in channel {}.",
@@ -3590,7 +3614,7 @@ impl<Signer: Sign> Channel<Signer> {
 			channel_id: self.channel_id,
 			per_commitment_secret,
 			next_per_commitment_point,
-		}, commitment_signed, monitor_update))
+		}, commitment_signed, monitor_update, should_revoke, did_remote_send_custom_output_commitment_sig))
 	}
 
 	/// Public version of the below, checking relevant preconditions first.
@@ -6793,7 +6817,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			custom_output.cltv_expiry.write(writer)?;
 			match &custom_output.state {
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => { 0u8.write(writer)?; }
-				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived) => { 1u8.write(writer)?; }
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) => { 1u8.write(writer)?; }
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) => { 2u8.write(writer)?; }
 				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) => { 3u8.write(writer)?; }
 				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) => { 4u8.write(writer)?; }
@@ -7104,7 +7128,7 @@ impl<'a, Signer: Sign, K: Deref> ReadableArgs<(&'a K, u32)> for Channel<Signer>
 				script: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
 					0 => CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput),
-					1 => CustomOutputState::Alpha(AlphaCustomOutputState::RemoteCommitmentSignatureReceived),
+					1 => CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature),
 					2 => CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent),
 					3 => CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent),
 					4 => CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived),
