@@ -2874,6 +2874,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(custom_output_details)
 	}
 
+	/// TODO(10101): add doc
 	pub fn continue_remote_add_custom_output(
 		&self,
 		custom_output_id: CustomOutputId,
@@ -2894,6 +2895,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(custom_output_details)
 	}
 
+	/// TODO(10101): add doc
 	pub fn manual_send_commitment_signed(
 		&self,
 		pk_counterparty: PublicKey,

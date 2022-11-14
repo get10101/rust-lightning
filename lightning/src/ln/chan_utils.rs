@@ -1209,12 +1209,13 @@ pub struct CommitmentTransaction {
 	to_countersignatory_value_sat: u64,
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
+	/// TODO(10101): add doc
 	pub custom_outputs: Vec<CustomOutputInCommitment>,
 	// A boolean that is serialization backwards-compatible
 	opt_anchors: Option<()>,
 	// A cache of the parties' pubkeys required to construct the transaction, see doc for trust()
 	keys: TxCreationKeys,
-	// For access to the pre-built transaction, see doc for trust()
+	/// For access to the pre-built transaction, see doc for trust()
 	pub built: BuiltCommitmentTransaction,
 }
 

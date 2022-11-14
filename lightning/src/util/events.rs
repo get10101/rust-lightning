@@ -711,7 +711,9 @@ pub enum Event {
 	/// We expect the library consumer to verify signatures based on the custom output, on the
 	/// application layer before they send their own commitment signature to the remote node.
 	RemoteSentCustomOutputCommitmentSignature {
+		/// TODO(10101): add doc
 		commitment_signed: CommitmentSigned,
+		/// TODO(10101): add doc
 		revoke_and_ack: RevokeAndACK,
 	},
 }
@@ -1194,7 +1196,7 @@ impl MaybeReadable for Event {
 					};
 					read_tlv_fields!(reader, {
 						(0, commitment_signed, required),
-						(0, revoke_and_ack, required)
+						(2, revoke_and_ack, required)
 					});
 					Ok(Some(Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack  }))
 				};
