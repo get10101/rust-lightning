@@ -5206,7 +5206,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let (custom_output_details, commiment_signed, monitor_update) = try_chan_entry!(self, channel.get_mut().continue_remote_add_custom_output_and_commit(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, &self.logger), channel_state, channel);
 
 				// TODO(10101): Handle update_err properly
-				let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+				let _update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
 
 				(custom_output_details, commiment_signed)
 			},
