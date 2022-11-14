@@ -421,14 +421,14 @@ struct HTLCStats {
 	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
-// Gathering stats on pending custom outputs, either inbound or outbound side
+// Gathering stats on pending custom outputs, inbound side
 #[allow(dead_code)]
 struct CustomOutputInboundStats {
 	pending_custom_outputs: u32,
 	pending_custom_outputs_msat: u64,
 }
 
-// Gathering stats on pending custom outputs, either inbound or outbound side
+// Gathering stats on pending custom outputs, outbound side
 #[allow(dead_code)]
 struct CustomOutputOutboundStats {
 	pending_custom_outputs: u32,
@@ -1720,7 +1720,7 @@ impl<Signer: Sign> Channel<Signer> {
 			CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) |
 			CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) |
 			CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) |
-			CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = dbg!(&custom_output.state) {
+			CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) = &custom_output.state {
 				included_custom_outputs.push(custom_output_in_tx);
 				log_trace!(
 					logger,
@@ -2619,73 +2619,79 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	fn get_inbound_pending_custom_output_stats(&self) -> CustomOutputInboundStats {
-		let mut sum_msats = 0u64;
-		let mut sum_profit = 0;
+		let mut sum_msats = 0i64;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			match output.state {
-				/*CustomOutputState::LocalAnnounced |
-				CustomOutputState::RemoteAnnounced |
-				CustomOutputState::AwaitingRemoteRevoke => {
-					sum_msats += output.remote_amount_msat;
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent) => {
+					sum_msats += output.remote_amount_msat as i64;
 				}
-				CustomOutputState::LocalRemoved { local_profit } |
-				CustomOutputState::RemoteRemoved { local_profit } | CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
-					sum_profit += local_profit * -1;
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
+					//
+					sum_msats += local_profit * -1;
 				}
-				CustomOutputState::Committed |
-				CustomOutputState::RemoteSettled |
-				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }*/
-				_ => todo!("Not implemented")
 			}
 		}
 
-		let sum_msats = if sum_profit > 0 {
-			sum_msats.checked_add(sum_profit as u64).unwrap_or_default()
-		} else {
-			sum_msats.checked_sub((sum_profit * -1) as u64).unwrap_or_default()
-		};
+		let pending_custom_outputs_msat = if sum_msats < 0 { 0 } else { sum_msats as u64 };
 
 		CustomOutputInboundStats {
 			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
-			pending_custom_outputs_msat: sum_msats
+			pending_custom_outputs_msat
 		}
 
 	}
 
 	fn get_outbound_pending_custom_output_stats(&self) -> CustomOutputOutboundStats {
-		let mut sum_msats = 0u64;
-		let mut sum_profit = 0;
+		let mut sum_msats = 0i64;
 		for (_, ref output) in self.pending_custom_outputs.iter() {
 			// TODO(10101): do we need to handle `< holder_dust_limit_success_sat` here as above?
 			match output.state {
-				/*CustomOutputState::LocalAnnounced |
-				CustomOutputState::RemoteAnnounced |
-				CustomOutputState::AwaitingRemoteRevoke => {
-					sum_msats += output.local_amount_msat;
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent) => {
+					sum_msats += output.local_amount_msat as i64;
 				}
-				CustomOutputState::LocalRemoved { local_profit } |
-				CustomOutputState::RemoteRemoved { local_profit } | CustomOutputState::AwaitingRemoteRemoveToRevoke { local_profit } => {
-					sum_profit += local_profit;
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { local_profit }) |
+				CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
+					//
+					sum_msats += local_profit;
 				}
-				CustomOutputState::Committed |
-				CustomOutputState::RemoteSettled |
-				CustomOutputState::AwaitingRemoteRevokeToSettle |
-				CustomOutputState::AwaitingRemovedRemoteRevoke => { todo!("Not implemented") }*/
-				_ => todo!("Not implemented")
 			}
 		}
 
-		let sum_msats = if sum_profit > 0 {
-			sum_msats.checked_add(sum_profit as u64).unwrap_or_default()
-		} else {
-			sum_msats.checked_sub((sum_profit * -1) as u64).unwrap_or_default()
-		};
+		let pending_custom_outputs_msat = if sum_msats < 0 { 0 } else { sum_msats as u64 };
 
 		CustomOutputOutboundStats {
 			pending_custom_outputs: self.pending_custom_outputs.len() as u32,
-			pending_custom_outputs_msat: sum_msats
+			pending_custom_outputs_msat
 		}
 	}
 
@@ -2771,7 +2777,29 @@ impl<Signer: Sign> Channel<Signer> {
 				CustomOutputState::Committed | CustomOutputState::RemoteSettled | CustomOutputState::AwaitingRemoteRevokeToSettle | CustomOutputState::AwaitingRemovedRemoteRevoke => {
 					unimplemented!("Not used so far")
 				}*/
-				_ => todo!("not implemented")
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckSent) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RevokeAndAckReceived) => {
+					balance_msat -= custom_output.local_amount_msat;
+				}
+				CustomOutputState::Alpha(AlphaCustomOutputState::LocalRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::RemoteRemoved { local_profit }) |
+				CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
+					sum_profit += local_profit;
+				}
+				CustomOutputState::Beta(BetaCustomOutputState::LocalAddedCustomOutput) |
+				CustomOutputState::Beta(BetaCustomOutputState::ReceivedAddCustomOutputRequest) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalCommitmentSignatureSent) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteCommitmentSignatureReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckReceived) |
+				CustomOutputState::Beta(BetaCustomOutputState::RevokeAndAckSent) |
+				CustomOutputState::Beta(BetaCustomOutputState::LocalRemoved { .. }) |
+				CustomOutputState::Beta(BetaCustomOutputState::RemoteRemoved { .. }) |
+				CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { .. }) => {
+					// ignoring because we only deal with local balances here
+				}
 			}
 		}
 

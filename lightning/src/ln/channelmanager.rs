@@ -5326,7 +5326,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 
 				if let ShouldRevoke::Yes = should_revoke {
-					dbg!("Should revoke");
 
 					channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 						node_id: counterparty_node_id.clone(),

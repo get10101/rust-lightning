@@ -1071,7 +1071,9 @@ fn test_add_custom_output() {
 
 	// CETs are exchanged at the application level here.
 
-	let custom_output_details_node0 = maker.node.continue_remote_add_custom_output(*custom_output_id).unwrap();
+	let _custom_output_details_node0 = maker.node.continue_remote_add_custom_output(*custom_output_id).unwrap();
+	// _custom_output_details_node0 will be used by application to create CETs
+	check_added_monitors!(maker, 1);
 
 	// 6. let (revoke_and_ack, commitment_signed) = node0.get_msg_events()
 	let events_0 = maker.node.get_and_clear_pending_msg_events();
@@ -1113,14 +1115,16 @@ fn test_add_custom_output() {
 	dbg!("Taker about to send commitment signed and RAA");
 
 	maker.node.handle_revoke_and_ack(&taker.node.get_our_node_id(), &revoke_and_ack);
+	check_added_monitors!(maker, 1);
 	maker.node.handle_commitment_signed(&taker.node.get_our_node_id(), &commitment_signed);
+	check_added_monitors!(maker, 1);
 
-	dbg!("Taker sent commitment signed and RAA");
+	dbg!("Maker sent commitment signed and RAA");
 
 	let revoke_and_ack_maker = get_event_msg!(maker, MessageSendEvent::SendRevokeAndACK, taker.node.get_our_node_id());
 
 	// 7. taker.handle_revoke_and_ack(revoke_and_ack)
-	taker.node.handle_revoke_and_ack(&maker.node.get_our_node_id(), &revoke_and_ack);
+	taker.node.handle_revoke_and_ack(&maker.node.get_our_node_id(), &revoke_and_ack_maker);
 	dbg!("Taker handled revoke and ack");
 
 	check_added_monitors!(taker, 1);
@@ -1134,7 +1138,7 @@ fn test_add_custom_output() {
 	let full_amount = amount_node0_msat + amount_node1_msat;
 	taker.node.remove_custom_output(custom_output_details.id, full_amount / 2, full_amount / 2).unwrap();
 
-	dbg!("Node 1 called `remove_custom_outputs`");
+	dbg!("Taker called `remove_custom_outputs`");
 	check_added_monitors!(taker, 1);
 
 	let events_1 = taker.node.get_and_clear_pending_msg_events();
@@ -1153,7 +1157,7 @@ fn test_add_custom_output() {
 		_ => panic!("Unexpected event"),
 	};
 
-	dbg!("Node1 got msg events to remove custom output");
+	dbg!("Taker got msg events to remove custom output");
 
 	maker
 		.node
@@ -1162,17 +1166,17 @@ fn test_add_custom_output() {
 	maker
 		.node
 		.handle_commitment_signed(&taker.node.get_our_node_id(), commitment_signed);
-	dbg!("Node0 handled commitment after remove signed");
+	dbg!("Maker handled commitment after remove signed");
 	check_added_monitors!(maker, 1);
 
 	let (revoke, commitment_signed) = get_revoke_commit_msgs!(maker, taker.node.get_our_node_id());
 
 	taker.node.handle_revoke_and_ack(&maker.node.get_our_node_id(), &revoke);
-	dbg!("Node1 handled revoke and ack for remove");
+	dbg!("Taker handled revoke and ack for remove");
 	check_added_monitors!(taker, 1);
 
 	taker.node.handle_commitment_signed(&maker.node.get_our_node_id(), &commitment_signed);
-	dbg!("Node1 handled commitment signed for remove");
+	dbg!("Taker handled commitment signed for remove");
 	check_added_monitors!(taker, 1);
 
 	let revoke = get_event_msg!(taker, MessageSendEvent::SendRevokeAndACK, maker.node.get_our_node_id());
