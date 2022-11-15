@@ -5339,6 +5339,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if let DidRemoteSendCustomOutputCommitmentSignature::Yes = did_remote_send_custom_output_commitment_sig {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push(Event::RemoteSentCustomOutputCommitmentSignature {
+							public_key_remote: counterparty_node_id.clone(),
 							commitment_signed,
 							revoke_and_ack
 						});

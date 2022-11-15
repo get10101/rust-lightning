@@ -1093,7 +1093,7 @@ fn test_add_custom_output() {
 
 	let taker_local_events = taker.node.get_and_clear_pending_events();
 	let (commitment_signed, revoke_and_ack) = match taker_local_events.as_slice() {
-		[Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack }] => (commitment_signed, revoke_and_ack),
+		[Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack, .. }] => (commitment_signed, revoke_and_ack),
 		_ => panic!("Unexpected event"),
 	};
 	dbg!("Taker was told that maker sent commitment signature");

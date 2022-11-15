@@ -712,6 +712,8 @@ pub enum Event {
 	/// application layer before they send their own commitment signature to the remote node.
 	RemoteSentCustomOutputCommitmentSignature {
 		/// TODO(10101): add doc
+		public_key_remote: PublicKey,
+		/// TODO(10101): add doc
 		commitment_signed: CommitmentSigned,
 		/// TODO(10101): add doc
 		revoke_and_ack: RevokeAndACK,
@@ -885,14 +887,16 @@ impl Writeable for Event {
 					(0, custom_output_id, required),
 				})
 			}
-			&Event::RemoteSentCustomOutputCommitmentSignature { ref commitment_signed, ref revoke_and_ack  } => {
+			&Event::RemoteSentCustomOutputCommitmentSignature { ref public_key_remote, ref commitment_signed, ref revoke_and_ack  } => {
+				let public_key_remote = public_key_remote.clone();
 				let commitment_signed = commitment_signed.clone();
 				let revoke_and_ack = revoke_and_ack.clone();
 
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, commitment_signed, required),
-					(2, revoke_and_ack, required),
+					(0, public_key_remote, required),
+					(2, commitment_signed, required),
+					(4, revoke_and_ack, required),
 				})
 			}
 		}
@@ -1184,6 +1188,7 @@ impl MaybeReadable for Event {
 			}
 			31u8 => {
 				let f = || {
+					let mut public_key_remote = PublicKey::from_slice(&[0;64]).unwrap();
 					let mut commitment_signed = CommitmentSigned {
 						channel_id: [0; 32],
 						signature: bitcoin::secp256k1::ecdsa::Signature::from_compact(&[0;64]).unwrap(),
@@ -1195,10 +1200,11 @@ impl MaybeReadable for Event {
 						next_per_commitment_point: PublicKey::from_slice(&[0;64]).unwrap(),
 					};
 					read_tlv_fields!(reader, {
-						(0, commitment_signed, required),
-						(2, revoke_and_ack, required)
+						(0, public_key_remote, required),
+						(2, commitment_signed, required),
+						(4, revoke_and_ack, required)
 					});
-					Ok(Some(Event::RemoteSentCustomOutputCommitmentSignature { commitment_signed, revoke_and_ack  }))
+					Ok(Some(Event::RemoteSentCustomOutputCommitmentSignature { public_key_remote, commitment_signed, revoke_and_ack  }))
 				};
 				f()
 			}
