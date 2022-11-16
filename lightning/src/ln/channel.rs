@@ -6843,6 +6843,7 @@ impl<Signer: Sign> Writeable for Channel<Signer> {
 			custom_output.local_amount_msat.write(writer)?;
 			custom_output.remote_amount_msat.write(writer)?;
 			custom_output.cltv_expiry.write(writer)?;
+			custom_output.script.write(writer)?;
 			match &custom_output.state {
 				CustomOutputState::Alpha(AlphaCustomOutputState::LocalAddedCustomOutput) => { 0u8.write(writer)?; }
 				CustomOutputState::Alpha(AlphaCustomOutputState::ReceivedRemoteCommitmentSignature) => { 1u8.write(writer)?; }
