@@ -5992,6 +5992,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	pub fn custom_outputs(&self) -> Vec<CustomOutputId> {
+		let custom_outputs = self.custom_outputs.lock().unwrap();
+
+		custom_outputs.keys().copied().collect()
+	}
+
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
