@@ -1136,7 +1136,7 @@ fn test_add_custom_output() {
 	// Let's remove the custom output collaboratively
 
 	let full_amount = amount_node0_msat + amount_node1_msat;
-	taker.node.remove_custom_output(custom_output_details.id, full_amount / 2, full_amount / 2).unwrap();
+	taker.node.remove_custom_output(custom_output_details.id, full_amount / 2).unwrap();
 
 	dbg!("Taker called `remove_custom_outputs`");
 	check_added_monitors!(taker, 1);

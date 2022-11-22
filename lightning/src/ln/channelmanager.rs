@@ -2929,20 +2929,21 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	/// Remove custom output from channel
-	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_amount: u64, remote_amount: u64) -> Result<(), RemoveCustomOutputError> {
+	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_out_amount: u64) -> Result<(), RemoveCustomOutputError> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 
 		let mut custom_outputs = self.custom_outputs.lock().unwrap();
 		let custom_output = custom_outputs.get(&custom_output_id).ok_or(RemoveCustomOutputError::CustomOutputNotFound)?;
-		// let custom_output: CustomOutput = todo!();
 
+		let total_amount_msat = custom_output.local_amount_msat + custom_output.remote_amount_msat;
 
-		let channel_id = custom_output.channel_id;
-		// let channel_id = todo!();
-
-		if custom_output.local_amount_msat + custom_output.remote_amount_msat != local_amount + remote_amount {
+		if local_out_amount > total_amount_msat {
 			return Err(RemoveCustomOutputError::InvalidAmounts)
 		}
+
+		let remote_out_amount = total_amount_msat - local_out_amount;
+
+		let channel_id = custom_output.channel_id;
 
 		let channel_holder = &mut *channel_lock;
 		let mut channel = match channel_holder.by_id.entry(channel_id.clone()) {
@@ -2960,7 +2961,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let pk_counterparty = channel.get().get_counterparty_node_id();
 
 		let (update_remove_custom_output, commitment_signed, monitor_update) =
-			match channel.get_mut().remove_custom_output_and_commit(custom_output_id, local_amount, remote_amount, &self.logger)
+			match channel.get_mut().remove_custom_output_and_commit(custom_output_id, local_out_amount, remote_out_amount, &self.logger)
 			{
 				Ok(res) => res,
 				Err(e) => {
@@ -5992,6 +5993,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Gets the custom outputs.
 	pub fn custom_outputs(&self) -> Vec<CustomOutputId> {
 		let custom_outputs = self.custom_outputs.lock().unwrap();
 

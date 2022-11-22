@@ -622,7 +622,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 			short_channel_id, pk_counterparty: counterparty.node_id, local_amount_msats, amount_counterparty_msat: remote_amount_msats, cltv_expiry })
 	}
 
-	fn remove_custom_output_route_details(&self, custom_output_id: CustomOutputId, local_amount_msats: u64, remote_amount_msats: u64, channel_details: ChannelDetails) -> Result<RemoveCustomOutputDetails, LightningError> {
+	fn remove_custom_output_route_details(&self, custom_output_id: CustomOutputId, local_amount_msats: u64, channel_details: ChannelDetails) -> Result<RemoveCustomOutputDetails, LightningError> {
 		let ChannelDetails { short_channel_id, .. } = channel_details;
 
 		let _short_channel_id = short_channel_id.ok_or_else(|| LightningError {
@@ -632,7 +632,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 
 		// TODO(10101): we should do some sanity checks here for the amounts
 
-		Ok(RemoveCustomOutputDetails { custom_output_id, local_amount_msats, remote_amount_msats })
+		Ok(RemoveCustomOutputDetails { custom_output_id, local_amount_msats })
 	}
 
 
@@ -671,9 +671,9 @@ where
 	fn remove_custom_output(
 		&self, route_details: RemoveCustomOutputDetails,
 	) -> Result<(), RemoveCustomOutputError> {
-		let RemoveCustomOutputDetails { custom_output_id, local_amount_msats,  remote_amount_msats } = route_details;
+		let RemoveCustomOutputDetails { custom_output_id, local_amount_msats } = route_details;
 
-		self.remove_custom_output(custom_output_id, local_amount_msats, remote_amount_msats)
+		self.remove_custom_output(custom_output_id, local_amount_msats)
 	}
 
 	fn send_spontaneous_payment(

@@ -98,8 +98,6 @@ pub struct RemoveCustomOutputDetails {
 	pub custom_output_id: CustomOutputId,
 	/// The amount that the local node (we) provide for the custom output.
 	pub local_amount_msats: u64,
-	/// The amount that our counterparty (the listener) provides for the custom output.
-	pub remote_amount_msats: u64,
 }
 
 pub(crate) trait RoutePath {

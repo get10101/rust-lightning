@@ -295,7 +295,7 @@ pub trait Router {
 
 	/// Gets custom output route details to remove a custom output.
 	fn remove_custom_output_route_details(
-		&self, custom_output_id: CustomOutputId, local_amount_msats: u64, remote_amount_msats: u64, channel_details: ChannelDetails,
+		&self, custom_output_id: CustomOutputId, local_amount_msats: u64, channel_details: ChannelDetails,
 	) -> Result<RemoveCustomOutputDetails, LightningError>;
 	/// Lets the router know that payment through a specific path has failed.
 	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
@@ -500,7 +500,7 @@ where
 	/// TODO(10101): Docs
 	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
 	pub fn remove_custom_output(
-		&self, pubkey: PublicKey, custom_output_id: CustomOutputId, amount_local_msats: u64, amount_remote_msats: u64
+		&self, pubkey: PublicKey, custom_output_id: CustomOutputId, amount_local_msats: u64
 	) -> Result<(), PaymentError> {
 		// TODO: We might have more than one channel with the peer identified by the
 		// `pubkey` argument. We will need to use a heuristic to select a channel among all
@@ -520,7 +520,6 @@ where
 		let route_details = self.router.remove_custom_output_route_details(
 			custom_output_id,
 			amount_local_msats,
-			amount_remote_msats,
 			channel_details,
 		).map_err(|e| PaymentError::Routing(e))?;
 
@@ -1948,7 +1947,7 @@ mod tests {
 		}
 
 		fn remove_custom_output_route_details(
-			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
 		) -> Result<RemoveCustomOutputDetails, LightningError> {
 			todo!()
 		}
@@ -1988,7 +1987,7 @@ mod tests {
 		}
 
 		fn remove_custom_output_route_details(
-			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
 		) -> Result<RemoveCustomOutputDetails, LightningError> {
 			todo!()
 		}
@@ -2275,7 +2274,7 @@ fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u6
 		}
 
 		fn remove_custom_output_route_details(
-			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _remote_amount_msats: u64, _channel_details: ChannelDetails,
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
 		) -> Result<RemoveCustomOutputDetails, LightningError> {
 			todo!()
 		}
