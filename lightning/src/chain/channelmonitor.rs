@@ -3007,7 +3007,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// (except for HTLC transactions for channels with anchor outputs), which is an easy
 				// way to filter out any potential non-matching txn for lazy filters.
 				let prevout = &tx.input[0].previous_output;
-				if prevout.txid == self.funding_info.0.txid && prevout.vout == self.funding_info.0.index as u32 {
+				let match_prevout = |outpoint: &OutPoint| {
+					prevout.txid == outpoint.txid && prevout.vout == outpoint.index as u32
+				};
+				let is_match = match_prevout(&self.funding_info.0) ||
+					(self.original_funding_info.is_some() && match_prevout(&self.original_funding_info.as_ref().unwrap().0));
+
+				if is_match {
 					let mut balance_spendable_csv = None;
 					log_info!(logger, "Channel {} closed by funding output spend in txid {}.",
 						log_bytes!(self.funding_info.0.to_channel_id()), txid);
