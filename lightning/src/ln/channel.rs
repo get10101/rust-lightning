@@ -3856,6 +3856,7 @@ impl<Signer: Sign> Channel<Signer> {
 			// Take references explicitly so that we can hold multiple references to self.
 			let pending_inbound_htlcs: &mut Vec<_> = &mut self.pending_inbound_htlcs;
 			let pending_outbound_htlcs: &mut Vec<_> = &mut self.pending_outbound_htlcs;
+			let custom_outputs: &mut HashMap<_, _> = &mut self.pending_custom_outputs;
 
 			// We really shouldnt have two passes here, but retain gives a non-mutable ref (Rust bug)
 			pending_inbound_htlcs.retain(|htlc| {
@@ -3880,6 +3881,21 @@ impl<Signer: Sign> Channel<Signer> {
 					false
 				} else { true }
 			});
+
+			custom_outputs.retain(|id, custom_output| {
+				match custom_output.state {
+					CustomOutputState::Alpha(AlphaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) |
+					CustomOutputState::Beta(BetaCustomOutputState::AwaitingRemoteToRevokeAfterRemoval { local_profit }) => {
+						log_trace!(logger, " ...removing custom output with state AwaitingRemovedToRevokeAfterRemoval: {}", id);
+						value_to_self_msat_diff += local_profit;
+						false
+					},
+					_ => {
+						true
+					},
+				}
+			});
+
 			for htlc in pending_inbound_htlcs.iter_mut() {
 				let swap = if let &InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) = &htlc.state {
 					true
