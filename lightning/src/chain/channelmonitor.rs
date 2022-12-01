@@ -219,7 +219,7 @@ pub(crate) const LATENCY_GRACE_PERIOD_BLOCKS: u32 = 3;
 // It may cause spurious generation of bumped claim txn but that's alright given the outpoint is already
 // solved by a previous claim tx. What we want to avoid is reorg evicting our claim tx and us not
 // keep bumping another claim tx to solve the outpoint.
-pub const ANTI_REORG_DELAY: u32 = 6;
+pub const ANTI_REORG_DELAY: u32 = 0;
 /// Number of blocks before confirmation at which we fail back an un-relayed HTLC or at which we
 /// refuse to accept a new HTLC.
 ///
