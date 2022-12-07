@@ -4641,7 +4641,7 @@ impl<Signer: Sign> Channel<Signer> {
 	}
 
 	pub fn set_value_to_self(&mut self, value_to_self_msat: u64) {
-		self.value_to_self_msat = value_to_self_msat;
+		self.value_to_self_msat = value_to_self_msat + self.pending_outbound_htlcs.iter().map(|x| x.amount_msat).sum::<u64>();
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
