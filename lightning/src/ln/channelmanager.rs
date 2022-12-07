@@ -1869,14 +1869,18 @@ where
 			}
 			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-			let old_funding_outpoint = chan.channel_transaction_parameters.funding_outpoint.unwrap();
+			let original_funding_outpoint = chan.channel_transaction_parameters.original_funding_outpoint.unwrap_or_else(|| chan.channel_transaction_parameters.funding_outpoint.unwrap());
 			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
-			chan.channel_transaction_parameters.original_funding_outpoint = Some(old_funding_outpoint.clone());
+			chan.channel_transaction_parameters.original_funding_outpoint = if &original_funding_outpoint != funding_outpoint {
+				Some(original_funding_outpoint.clone())
+			} else {
+				None
+			};
 
 			chan.set_value_satoshis(channel_value_satoshis);
 			chan.set_value_to_self(value_to_self_msat);
 
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(old_funding_outpoint, *funding_outpoint) {
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(original_funding_outpoint, *funding_outpoint) {
 				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
 			}
 

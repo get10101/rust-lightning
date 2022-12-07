@@ -1188,8 +1188,14 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		let mut inner = self.inner.lock().unwrap();
 		// inner.outputs_to_watch.remove(inner.get_funding_txo());
 		let script = inner.funding_info.1.clone();
-		inner.original_funding_info = Some((inner.funding_info.0.clone(), inner.funding_info.1.clone()));
-		inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
+		if let Some(original) = inner.original_funding_info.as_ref() {
+			if fund_outpoint == original.0 {
+				inner.original_funding_info = None;
+			}
+		} else {
+			inner.original_funding_info = Some((inner.funding_info.0.clone(), inner.funding_info.1.clone()));
+			inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
+		}
 		inner.funding_info = (fund_outpoint, script);
 	}
 
