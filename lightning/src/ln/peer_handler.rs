@@ -19,12 +19,12 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::msgs::{ChannelMessageHandler, LightningError, NetAddress, OnionMessageHandler, RoutingMessageHandler, UpdateRemoveCustomOutput};
 use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{MaybeReadableArgs, VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor,NextNoiseStep};
 use crate::ln::wire;
-use crate::ln::wire::Encode;
+use crate::ln::wire::{Encode, Message};
 use crate::onion_message::{CustomOnionMessageContents, CustomOnionMessageHandler, SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::util::atomic_counter::AtomicCounter;
@@ -199,6 +199,12 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	fn handle_update_add_custom_output(&self, their_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	fn handle_update_remove_custom_output(&self, their_node_id: &PublicKey, msg: &UpdateRemoveCustomOutput) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
@@ -247,6 +253,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		features.set_zero_conf_optional();
 		features
 	}
+
 }
 impl Deref for ErroringMessageHandler {
 	type Target = ErroringMessageHandler;
@@ -668,9 +675,9 @@ fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 		Some(NetAddress::IPv4{addr: [0, _, _, _], port: _}) => None,
 		// For IPv4 range 100.64.0.0 - 100.127.255.255 (100.64/10)
 		Some(NetAddress::IPv4{addr: [100, 64..=127, _, _], port: _}) => None,
-		// For IPv4 range  	127.0.0.0 - 127.255.255.255 (127/8)
+		// For IPv4 range	127.0.0.0 - 127.255.255.255 (127/8)
 		Some(NetAddress::IPv4{addr: [127, _, _, _], port: _}) => None,
-		// For IPv4 range  	169.254.0.0 - 169.254.255.255 (169.254/16)
+		// For IPv4 range	169.254.0.0 - 169.254.255.255 (169.254/16)
 		Some(NetAddress::IPv4{addr: [169, 254, _, _], port: _}) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
 		Some(NetAddress::IPv4{addr: [172, 16..=31, _, _], port: _}) => None,
@@ -1369,6 +1376,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::UpdateAddHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_add_htlc(&their_node_id, &msg);
 			},
+			wire::Message::UpdateAddCustomOutput(msg) => {
+				self.message_handler.chan_handler.handle_update_add_custom_output(&their_node_id, &msg);
+			},
 			wire::Message::UpdateFulfillHTLC(msg) => {
 				self.message_handler.chan_handler.handle_update_fulfill_htlc(&their_node_id, &msg);
 			},
@@ -1445,6 +1455,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			wire::Message::Custom(custom) => {
 				self.custom_message_handler.handle_custom_message(custom, &their_node_id)?;
 			},
+			Message::UpdateRemoveCustomOutput(msg) => {
+				self.message_handler.chan_handler.handle_update_remove_custom_output(&their_node_id, &msg);
+			}
 		};
 		Ok(should_forward)
 	}
@@ -1603,6 +1616,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			}
 			for event in events_generated.drain(..) {
 				match event {
+					MessageSendEvent::AddCustomOutput { ref node_id, ref msg } => {
+						log_debug!(self.logger, "Handling AddCustomOutput event in peer_handler for node {} for channel {}",
+								log_pubkey!(node_id),
+								log_bytes!(msg.channel_id));
+						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
+					},
 					MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
 						log_debug!(self.logger, "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 								log_pubkey!(node_id),
@@ -1642,15 +1661,23 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								log_bytes!(msg.channel_id));
 						self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 					},
-					MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
-						log_debug!(self.logger, "Handling UpdateHTLCs event in peer_handler for node {} with {} adds, {} fulfills, {} fails for channel {}",
+					MessageSendEvent::UpdateCommitmentOutputs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed, ref update_add_custom_output, ref update_remove_custom_output } } => {
+						log_debug!(self.logger, "Handling UpdateCommitmentOutputs event in peer_handler for node {} with {} htlc adds, {} custom adds, {} custom removals, {} fulfills, {} fails for channel {}",
 								log_pubkey!(node_id),
 								update_add_htlcs.len(),
+								update_add_custom_output.len(),
+								update_remove_custom_output.len(),
 								update_fulfill_htlcs.len(),
 								update_fail_htlcs.len(),
 								log_bytes!(commitment_signed.channel_id));
 						let mut peer = get_peer_for_forwarding!(node_id);
 						for msg in update_add_htlcs {
+							self.enqueue_message(&mut *peer, msg);
+						}
+						for msg in update_add_custom_output {
+							self.enqueue_message(&mut *peer, msg);
+						}
+						for msg in update_remove_custom_output {
 							self.enqueue_message(&mut *peer, msg);
 						}
 						for msg in update_fulfill_htlcs {

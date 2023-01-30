@@ -32,7 +32,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::ecdh::SharedSecret;
-use bitcoin::{LockTime, secp256k1, Sequence};
+use bitcoin::{LockTime, secp256k1, Sequence, Script};
 
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
@@ -49,11 +49,11 @@ use crate::ln::features::InvoiceFeatures;
 use crate::routing::router::{PaymentParameters, Route, RouteHop, RoutePath, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
-use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError, MAX_VALUE_MSAT};
+use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, LightningError, MAX_VALUE_MSAT};
 use crate::ln::wire::Encode;
 use crate::chain::keysinterface::{Sign, KeysInterface, KeysManager, InMemorySigner, Recipient};
 use crate::util::config::{UserConfig, ChannelConfig};
-use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
+use crate::util::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, Event};
 use crate::util::{byte_utils, events};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -65,11 +65,15 @@ use crate::io;
 use crate::prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
+use core::fmt::{Debug, Display, Formatter};
 use crate::io::Read;
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
+
+use super::channel::{ShouldRevoke, DidRemoteSendCustomOutputCommitmentSignature};
+use super::msgs::{CommitmentSigned, RevokeAndACK};
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
@@ -150,7 +154,7 @@ pub(super) enum HTLCForwardInfo {
 }
 
 /// Tracks the inbound corresponding to an outbound HTLC
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Debug)]
 pub(crate) struct HTLCPreviousHopData {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	short_channel_id: u64,
@@ -191,6 +195,37 @@ struct ClaimableHTLC {
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
 pub struct PaymentId(pub [u8; 32]);
 
+/// An identifier used to uniquely identify a custom output to LDK.
+/// (C-not exported) as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+pub struct CustomOutputId(pub [u8; 32]);
+
+/// How to use a custom output as an input in another transaction.
+/// TODO(10101): Add sighash for both commitment transaction.
+#[derive(Clone, Debug)]
+pub struct CustomOutputDetails {
+	/// Unique identifier for the custom output.
+	pub id: CustomOutputId,
+	/// Where the output is located in the local commitment transaction.
+	pub outpoint_commit_local: OutPoint,
+	/// Where the output is located in the remote commitment transaction.
+	pub outpoint_commit_remote: OutPoint,
+	/// The script to be signed when spending the custom output.
+	pub script: Script,
+	/// The shared amount in the custom output.
+	pub amount: u64,
+}
+
+impl Display for CustomOutputId {
+
+	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+		for v in &self.0 {
+			write!(f, "{:x?}", v)?;
+		}
+		Ok(())
+	}
+}
+
 impl Writeable for PaymentId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.0.write(w)
@@ -203,9 +238,23 @@ impl Readable for PaymentId {
 		Ok(PaymentId(buf))
 	}
 }
+
+impl Writeable for CustomOutputId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for CustomOutputId {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(CustomOutputId(buf))
+	}
+}
+
 /// Tracks the inbound corresponding to an outbound HTLC
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum HTLCSource {
 	PreviousHopData(HTLCPreviousHopData),
 	OutboundRoute {
@@ -487,6 +536,16 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
+#[derive(Debug)]
+struct CustomOutput {
+	channel_id: [u8;32],
+	local_amount_msat: u64,
+	remote_amount_msat: u64,
+	cltv_expiry: u32,
+	script: Script,
+	counterparty_node_id: PublicKey,
+}
+
 impl PendingOutboundPayment {
 	fn is_retryable(&self) -> bool {
 		match self {
@@ -701,9 +760,9 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //
 pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	default_configuration: UserConfig,
@@ -746,6 +805,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_outbound_payments: Mutex<HashMap<PaymentId, PendingOutboundPayment>>,
+
+	/// Stores alive custom outputs currently asigned to some channel
+	custom_outputs: Mutex<HashMap<CustomOutputId, CustomOutput>>, // TODO(10101): Not sure if beta ever adds it to this enum.
 
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
@@ -1231,6 +1293,25 @@ pub enum PaymentSendFailure {
 	},
 }
 
+/// An error returned if removing a custom output failed
+#[derive(Clone, Debug)]
+pub enum RemoveCustomOutputError {
+	/// Custom output was not found
+	CustomOutputNotFound,
+	/// Channel to remove custom output from was not found
+	ChannelNotFound,
+	/// Channel already closed
+	ChannelClosed,
+	/// Amounts provided do not add up
+	InvalidAmounts,
+	/// Channel currently not available
+	ChannelNotAvailable,
+	/// Channel is dead
+	ChannelFailed,
+	/// Somethingsomething monitor in progress
+	MonitorInProgress,
+}
+
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
 /// [phantom node payments]: crate::chain::keysinterface::PhantomKeysManager
@@ -1538,7 +1619,7 @@ macro_rules! handle_chan_restoration_locked {
 
 			macro_rules! handle_cs { () => {
 				if let Some(update) = $commitment_update {
-					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					$channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 						node_id: counterparty_node_id,
 						updates: update,
 					});
@@ -1594,10 +1675,10 @@ macro_rules! post_handle_chan_restoration {
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -1632,6 +1713,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
+			custom_outputs: Mutex::new(Default::default()),
 			forward_htlcs: Mutex::new(HashMap::new()),
 			id_to_peer: Mutex::new(HashMap::new()),
 
@@ -2528,7 +2610,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						}
 
 						log_debug!(self.logger, "Sending payment along path resulted in a commitment_signed for channel {}", log_bytes!(chan_id));
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: path.first().unwrap().pubkey,
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: vec![update_add],
@@ -2537,6 +2619,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: None,
 								commitment_signed,
+								update_add_custom_output: Vec::new(),
+								update_remove_custom_output: Vec::new()
 							},
 						});
 					},
@@ -2674,6 +2758,273 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		} else {
 			Ok(payment_id)
 		}
+	}
+
+	/// TODO(10101): Add docs
+	pub fn add_custom_output(
+		&self,
+		short_channel_id: u64,
+		pk_counterparty: PublicKey,
+		local_amount_msat: u64,
+		remote_amount_msat: u64,
+		cltv_expiry: u32,
+		script: Script,
+	) -> Result<CustomOutputDetails, String> {
+		let mut channel_lock = self.channel_state.lock().unwrap();
+		let channel_id = channel_lock
+			.short_to_chan_info
+			.get(&short_channel_id)
+			.map(|(_, id)| id)
+			.cloned()
+			.ok_or("No channel available with first hop!".to_owned())?;
+
+		// TODO(10101): Here `send_payment_along_path` checks if the payment is already in
+		// `pending_outbounds` and exits if it's not marked as "retryable". We might have to do
+		// something similar for DLCs
+
+		let channel_holder = &mut *channel_lock;
+		let mut channel = match channel_holder.by_id.entry(channel_id.clone()) {
+			hash_map::Entry::Occupied(channel) => channel,
+			hash_map::Entry::Vacant(_) => {
+				return Err("No channel available with peer".to_owned());
+			}
+		};
+
+
+		if channel.get().get_counterparty_node_id() != pk_counterparty {
+			return Err("Node ID mismatch".to_owned());
+		}
+
+		if !channel.get().is_live() {
+			return Err("Peer for first hop currently disconnected/pending monitor update!".to_owned());
+		}
+
+		let custom_output_id = CustomOutputId(self.keys_manager.get_secure_random_bytes());
+
+
+		let (custom_output_details, update_add) =
+			match channel.get_mut().add_custom_output_and_build_commits(custom_output_id,
+				local_amount_msat,
+				remote_amount_msat,
+				cltv_expiry,
+				script.clone(),
+				&self.logger
+			)
+		{
+			Ok(res) => res,
+			Err(e) => {
+				let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
+				if drop {
+					channel.remove_entry();
+				}
+				match handle_error!(self, Result::<(), _>::Err(e), pk_counterparty) {
+					Ok(_) => unreachable!(),
+					Err(e) => {
+						return Err(format!("Channel unavailable: {}", e.err));
+					},
+				}
+			},
+		};
+
+		let channel_id = channel.get().channel_id();
+
+		// TODO(10101): We have to monitor after we sign the commit transaction later!
+		// let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+		// match (update_err,
+		//	   handle_monitor_update_res!(self, update_err, channel_holder, channel,
+		//			  RAACommitmentOrder::CommitmentFirst, false, true))
+		// {
+		//	(ChannelMonitorUpdateStatus::PermanentFailure, Err(e)) => return Err(format!("{}", e.err.err)),
+		//	(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
+		//		// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
+		//		// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
+		//		//     session_privs: HashSet::new(),
+		//		//     pending_amt_msat: 0,
+		//		//     pending_fee_msat: Some(0),
+		//		//     payment_hash: *payment_hash,
+		//		//     payment_secret: *payment_secret,
+		//		//     starting_block_height: self.best_block.read().unwrap().height(),
+		//		//     total_msat: total_value,
+		//		// });
+		//		// assert!(payment.insert(session_priv_bytes, path));
+
+		//		if res.is_err() {
+		//			return Err("Monitor update in progress".to_owned());
+		//		}
+		//	},
+		//	_ => unreachable!(),
+		// }
+
+		log_debug!(self.logger, "Adding custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::AddCustomOutput {
+			node_id: pk_counterparty,
+			msg: update_add,
+		});
+
+		self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
+			channel_id,
+			local_amount_msat,
+			remote_amount_msat,
+			script,
+			cltv_expiry,
+			counterparty_node_id: channel.get().get_counterparty_node_id(),
+		});
+
+		Ok(custom_output_details)
+	}
+
+	/// TODO(10101): add doc
+	pub fn continue_remote_add_custom_output(
+		&self,
+		custom_output_id: CustomOutputId,
+	) -> Result<CustomOutputDetails, String> {
+		let custom_outputs = self.custom_outputs.lock().unwrap();
+		let CustomOutput { channel_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, counterparty_node_id } = custom_outputs.get(&custom_output_id).unwrap();
+
+		let custom_output_details = self.internal_continue_remote_add_custom_output(
+			counterparty_node_id,
+			*channel_id,
+			custom_output_id,
+			*local_amount_msat,
+			*remote_amount_msat,
+			*cltv_expiry,
+			script.clone()
+		).map_err(|e| format!("Failed to continue with add custom output protocol initiated by remote: {:?}", e.err))?;
+
+		Ok(custom_output_details)
+	}
+
+	/// TODO(10101): add doc
+	pub fn manual_send_commitment_signed(
+		&self,
+		pk_counterparty: PublicKey,
+		commitment_signed: CommitmentSigned,
+		revoke_and_ack: RevokeAndACK,
+	) -> Result<(), String> {
+		let mut channel_holder = self.channel_state.lock().unwrap();
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+			node_id: pk_counterparty,
+			updates: CommitmentUpdate {
+				update_add_htlcs: Vec::new(),
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
+				commitment_signed,
+				update_add_custom_output: Vec::new(),
+				update_remove_custom_output: Vec::new(),
+			}
+		});
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
+			node_id: pk_counterparty,
+			msg: revoke_and_ack,
+		});
+
+		// TODO(10101): Move channel state forward?
+
+		Ok(())
+	}
+
+	/// Remove custom output from channel
+	pub fn remove_custom_output(&self, custom_output_id: CustomOutputId, local_out_amount: u64) -> Result<(), RemoveCustomOutputError> {
+		let mut channel_lock = self.channel_state.lock().unwrap();
+
+		let mut custom_outputs = self.custom_outputs.lock().unwrap();
+		let custom_output = custom_outputs.get(&custom_output_id).ok_or(RemoveCustomOutputError::CustomOutputNotFound)?;
+
+		let total_amount_msat = custom_output.local_amount_msat + custom_output.remote_amount_msat;
+
+		if local_out_amount > total_amount_msat {
+			return Err(RemoveCustomOutputError::InvalidAmounts)
+		}
+
+		let remote_out_amount = total_amount_msat - local_out_amount;
+
+		let channel_id = custom_output.channel_id;
+
+		let channel_holder = &mut *channel_lock;
+		let mut channel = match channel_holder.by_id.entry(channel_id.clone()) {
+			hash_map::Entry::Occupied(channel) => channel,
+			hash_map::Entry::Vacant(_) => {
+				return Err(RemoveCustomOutputError::ChannelNotFound);
+			}
+		};
+
+		if !channel.get().is_live() {
+			return Err(RemoveCustomOutputError::ChannelNotAvailable);
+		}
+
+
+		let pk_counterparty = channel.get().get_counterparty_node_id();
+
+		let (update_remove_custom_output, commitment_signed, monitor_update) =
+			match channel.get_mut().remove_custom_output_and_commit(custom_output_id, local_out_amount, remote_out_amount, &self.logger)
+			{
+				Ok(res) => res,
+				Err(e) => {
+					let (drop, e) = convert_chan_err!(self, e, channel_holder.short_to_chan_info, channel.get_mut(), channel.key());
+					if drop {
+						channel.remove_entry();
+					}
+					match handle_error!(self, Result::<(), _>::Err(e), pk_counterparty) {
+						Ok(_) => unreachable!(),
+						Err(_) => {
+							return Err(RemoveCustomOutputError::ChannelNotAvailable);
+						},
+					}
+				},
+			};
+
+		let update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+		let channel_id = channel.get().channel_id();
+		match (update_err,
+			   handle_monitor_update_res!(self, update_err, channel_holder, channel,
+					  RAACommitmentOrder::CommitmentFirst, false, true))
+		{
+			(ChannelMonitorUpdateStatus::PermanentFailure, Err(_)) => return Err(RemoveCustomOutputError::ChannelFailed),
+			(ChannelMonitorUpdateStatus::Completed | ChannelMonitorUpdateStatus::InProgress, res) => {
+				// TODO(10101): Add entry to a `pending_custom_outputs` field in `ChannelManager`?
+				// let payment = payment_entry.or_insert_with(|| PendingOutboundPayment::Retryable {
+				//     session_privs: HashSet::new(),
+				//     pending_amt_msat: 0,
+				//     pending_fee_msat: Some(0),
+				//     payment_hash: *payment_hash,
+				//     payment_secret: *payment_secret,
+				//     starting_block_height: self.best_block.read().unwrap().height(),
+				//     total_msat: total_value,
+				// });
+				// assert!(payment.insert(session_priv_bytes, path));
+
+				if res.is_err() {
+					return Err(RemoveCustomOutputError::MonitorInProgress);
+				}
+			},
+			_ => unreachable!(),
+		}
+
+		log_debug!(self.logger, "Removing custom output resulted in a commitment_signed for channel {}", log_bytes!(channel_id));
+
+		channel_holder.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+			node_id: pk_counterparty,
+			updates: msgs::CommitmentUpdate {
+				update_add_htlcs: Vec::new(),
+				update_fulfill_htlcs: Vec::new(),
+				update_fail_htlcs: Vec::new(),
+				update_fail_malformed_htlcs: Vec::new(),
+				update_fee: None,
+				commitment_signed,
+				update_add_custom_output: Vec::new(),
+				update_remove_custom_output: vec![update_remove_custom_output]
+			},
+		});
+
+
+		custom_outputs.remove(&custom_output_id);
+
+		Ok(())
 	}
 
 	/// Retries a payment along the given [`Route`].
@@ -3254,7 +3605,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							}
 							log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
 								add_htlc_msgs.len(), fail_htlc_msgs.len(), log_bytes!(chan.get().channel_id()));
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
 									update_add_htlcs: add_htlc_msgs,
@@ -3263,6 +3614,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									update_fail_malformed_htlcs: Vec::new(),
 									update_fee: None,
 									commitment_signed: commitment_msg,
+									update_add_custom_output: Vec::new(),
+									update_remove_custom_output: Vec::new()
 								},
 							});
 						}
@@ -3521,7 +3874,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
 				match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
 					ChannelMonitorUpdateStatus::Completed => {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: chan.get_counterparty_node_id(),
 							updates: msgs::CommitmentUpdate {
 								update_add_htlcs: Vec::new(),
@@ -3530,6 +3883,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								update_fail_malformed_htlcs: Vec::new(),
 								update_fee: Some(update_fee),
 								commitment_signed,
+								update_add_custom_output: Vec::new(),
+								update_remove_custom_output: Vec::new()
 							},
 						});
 						Ok(())
@@ -4143,7 +4498,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Some((msg, commitment_signed)) = msgs {
 							log_debug!(self.logger, "Claiming funds for HTLC with preimage {} resulted in a commitment_signed for channel {}",
 								log_bytes!(payment_preimage.0), log_bytes!(chan.get().channel_id()));
-							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+							channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 								node_id: chan.get().get_counterparty_node_id(),
 								updates: msgs::CommitmentUpdate {
 									update_add_htlcs: Vec::new(),
@@ -4152,6 +4507,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 									update_fail_malformed_htlcs: Vec::new(),
 									update_fee: None,
 									commitment_signed,
+									update_add_custom_output: Vec::new(),
+									update_remove_custom_output: Vec::new()
 								}
 							});
 						}
@@ -4824,6 +5181,75 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		Ok(())
 	}
 
+	fn internal_update_receive_add_custom_output_request(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<(), MsgHandleErrInternal> {
+		// Stored to remember once receiver is ready to continue with the protocol
+		self.custom_outputs.lock().unwrap().insert(custom_output_id, CustomOutput {
+			channel_id,
+			local_amount_msat,
+			remote_amount_msat,
+			script,
+			cltv_expiry,
+			counterparty_node_id: counterparty_node_id.clone()
+		});
+
+		self.pending_events.lock().unwrap().push(Event::RemoteSentAddCustomOutputEvent { custom_output_id });
+
+		Ok(())
+	}
+
+	fn internal_continue_remote_add_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64, cltv_expiry: u32, script: Script) -> Result<CustomOutputDetails, MsgHandleErrInternal> {
+		let mut channel_holder = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_holder;
+
+		let (custom_output_details, commitment_signed) = match channel_state.by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(mut channel) => {
+				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
+				}
+				let (custom_output_details, commiment_signed, monitor_update) = try_chan_entry!(self, channel.get_mut().continue_remote_add_custom_output_and_commit(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script, &self.logger), channel_state, channel);
+
+				// TODO(10101): Handle update_err properly
+				let _update_err = self.chain_monitor.update_channel(channel.get().get_funding_txo().unwrap(), monitor_update);
+
+				(custom_output_details, commiment_signed)
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
+		};
+
+
+
+		channel_state.pending_msg_events.push(MessageSendEvent::UpdateCommitmentOutputs { node_id: *counterparty_node_id, updates: CommitmentUpdate {
+			update_add_htlcs: vec![],
+			update_fulfill_htlcs: vec![],
+			update_fail_htlcs: vec![],
+			update_fail_malformed_htlcs: vec![],
+			update_fee: None,
+			commitment_signed,
+			update_add_custom_output: vec![], // TODO(10101): Is this okay?
+			update_remove_custom_output: vec![],
+		} });
+
+		Ok(custom_output_details)
+	}
+
+
+	fn internal_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, channel_id: [u8; 32], custom_output_id: CustomOutputId, local_amount_msat: u64, remote_amount_msat: u64) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_holder = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_holder;
+
+		match channel_state.by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(mut channel) => {
+				if channel.get().get_counterparty_node_id() != *counterparty_node_id {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), channel_id));
+				}
+				try_chan_entry!(self, channel.get_mut().update_remove_custom_output(channel_id, custom_output_id, local_amount_msat, remote_amount_msat, &self.logger), channel_state, channel);
+			},
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Failed to find corresponding channel".to_owned(), channel_id)),
+		}
+
+		Ok(())
+	}
+
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let (htlc_source, forwarded_htlc_value) = {
@@ -4884,7 +5310,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				if chan.get().get_counterparty_node_id() != *counterparty_node_id {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a message for a channel from the wrong node!".to_owned(), msg.channel_id));
 				}
-				let (revoke_and_ack, commitment_signed, monitor_update) =
+				let (revoke_and_ack, commitment_signed, monitor_update, should_revoke, did_remote_send_custom_output_commitment_sig) =
 					match chan.get_mut().commitment_signed(&msg, &self.logger) {
 						Err((None, e)) => try_chan_entry!(self, Err(e), channel_state, chan),
 						Err((Some(update), e)) => {
@@ -4900,22 +5326,39 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					return Err(e);
 				}
 
-				channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
-					node_id: counterparty_node_id.clone(),
-					msg: revoke_and_ack,
-				});
-				if let Some(msg) = commitment_signed {
-					channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+
+
+				if let ShouldRevoke::Yes = should_revoke {
+
+					channel_state.pending_msg_events.push(events::MessageSendEvent::SendRevokeAndACK {
 						node_id: counterparty_node_id.clone(),
-						updates: msgs::CommitmentUpdate {
-							update_add_htlcs: Vec::new(),
-							update_fulfill_htlcs: Vec::new(),
-							update_fail_htlcs: Vec::new(),
-							update_fail_malformed_htlcs: Vec::new(),
-							update_fee: None,
-							commitment_signed: msg,
-						},
+						msg: revoke_and_ack.clone(),
 					});
+				}
+
+				if let Some(commitment_signed) = commitment_signed {
+					if let DidRemoteSendCustomOutputCommitmentSignature::Yes = did_remote_send_custom_output_commitment_sig {
+						let mut pending_events = self.pending_events.lock().unwrap();
+						pending_events.push(Event::RemoteSentCustomOutputCommitmentSignature {
+							public_key_remote: counterparty_node_id.clone(),
+							commitment_signed,
+							revoke_and_ack
+						});
+					} else {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
+							node_id: counterparty_node_id.clone(),
+							updates: msgs::CommitmentUpdate {
+								update_add_htlcs: Vec::new(),
+								update_fulfill_htlcs: Vec::new(),
+								update_fail_htlcs: Vec::new(),
+								update_fail_malformed_htlcs: Vec::new(),
+								update_fee: None,
+								commitment_signed,
+								update_add_custom_output: Vec::new(),
+								update_remove_custom_output: Vec::new()
+							},
+						});
+					}
 				}
 				Ok(())
 			},
@@ -4940,11 +5383,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                                prev_htlc_id, forward_info });
+													prev_htlc_id, forward_info });
 						},
 						hash_map::Entry::Vacant(entry) => {
 							entry.insert(vec!(HTLCForwardInfo::AddHTLC { prev_short_channel_id, prev_funding_outpoint,
-							                                             prev_htlc_id, forward_info }));
+												     prev_htlc_id, forward_info }));
 						}
 					}
 				}
@@ -4994,11 +5437,12 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						} else { unreachable!(); }
 					}
 					if let Some(updates) = raa_updates.commitment_update {
-						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+						channel_state.pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 							node_id: counterparty_node_id.clone(),
 							updates,
 						});
 					}
+
 					break Ok((raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
 							raa_updates.finalized_claimed_htlcs,
 							chan.get().get_short_channel_id()
@@ -5258,7 +5702,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
 							match self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
 								ChannelMonitorUpdateStatus::Completed => {
-									pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+									pending_msg_events.push(events::MessageSendEvent::UpdateCommitmentOutputs {
 										node_id: chan.get_counterparty_node_id(),
 										updates: commitment_update,
 									});
@@ -5549,6 +5993,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 	}
 
+	/// Gets the custom outputs.
+	pub fn custom_outputs(&self) -> Vec<CustomOutputId> {
+		let custom_outputs = self.custom_outputs.lock().unwrap();
+
+		custom_outputs.keys().copied().collect()
+	}
+
 	#[cfg(any(test, fuzzing, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
@@ -5570,9 +6021,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -5954,10 +6405,10 @@ where
 impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	ChannelMessageHandler for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -5997,6 +6448,28 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 	fn handle_update_add_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let _ = handle_error!(self, self.internal_update_add_htlc(counterparty_node_id, msg), *counterparty_node_id);
+	}
+
+	fn handle_update_add_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let msgs::UpdateAddCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat, cltv_expiry, script } = msg.clone();
+
+		let local_amount_msat = receiver_amount_msat;
+		let remote_amount_msat = sender_amount_msat;
+
+		let _ = handle_error!(self, self.internal_update_receive_add_custom_output_request(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat, cltv_expiry, script), *counterparty_node_id);
+	}
+
+	fn handle_update_remove_custom_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateRemoveCustomOutput) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let msgs::UpdateRemoveCustomOutput { channel_id, custom_output_id, sender_amount_msat, receiver_amount_msat } = *msg;
+
+		let local_amount_msat = receiver_amount_msat;
+		let remote_amount_msat = sender_amount_msat;
+
+		let _ = handle_error!(self, self.internal_update_remove_custom_output(counterparty_node_id, channel_id, custom_output_id, local_amount_msat, remote_amount_msat), *counterparty_node_id);
 	}
 
 	fn handle_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
@@ -6075,13 +6548,14 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			});
 			pending_msg_events.retain(|msg| {
 				match msg {
+					&events::MessageSendEvent::AddCustomOutput { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendAcceptChannel { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendOpenChannel { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendFundingCreated { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendFundingSigned { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendChannelReady { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => node_id != counterparty_node_id,
-					&events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => node_id != counterparty_node_id,
+					&events::MessageSendEvent::UpdateCommitmentOutputs { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendClosingSigned { ref node_id, .. } => node_id != counterparty_node_id,
 					&events::MessageSendEvent::SendShutdown { ref node_id, .. } => node_id != counterparty_node_id,
@@ -6567,6 +7041,15 @@ impl_writeable_tlv_based!(PendingInboundPayment, {
 	(8, min_value_msat, required),
 });
 
+impl_writeable_tlv_based!(CustomOutput, {
+	(0, channel_id, required),
+	(2, local_amount_msat, required),
+	(4, remote_amount_msat, required),
+	(6, cltv_expiry, required),
+	(8, script, required),
+	(10, counterparty_node_id, required),
+});
+
 impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	(0, Legacy) => {
 		(0, session_privs, required),
@@ -6592,10 +7075,10 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<Signer, M, T, K, F, L>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
@@ -6661,6 +7144,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.lock().unwrap();
+		let custom_outputs = self.custom_outputs.lock().unwrap();
 		let events = self.pending_events.lock().unwrap();
 		(events.len() as u64).write(writer)?;
 		for event in events.iter() {
@@ -6723,6 +7207,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 				_ => {},
 			}
 		}
+
+		(custom_outputs.len() as u64).write(writer)?;
+		for (id, custom_output) in custom_outputs.iter() {
+			id.write(writer)?;
+			custom_output.write(writer)?;
+		}
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(3, pending_outbound_payments, required),
@@ -6730,6 +7221,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 			(7, self.fake_scid_rand_bytes, required),
 			(9, htlc_purposes, vec_type),
 			(11, self.probing_cookie_secret, required),
+			// TODO: is this needed?
+			(13, custom_outputs, required)
 		});
 
 		Ok(())
@@ -6770,10 +7263,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct ChannelManagerReadArgs<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
@@ -6842,10 +7335,10 @@ impl<'a, Signer: 'a + Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<Signer, M, T, K, F, L>>)
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<Signer, M, T, K, F, L>)>::read(reader, args)?;
@@ -6856,10 +7349,10 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>> for (BlockHash, ChannelManager<Signer, M, T, K, F, L>)
 	where M::Target: chain::Watch<Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface<Signer = Signer>,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface<Signer = Signer>,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, Signer, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
@@ -6876,6 +7369,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
+		// TODO: load custom outputs in channel. Right now, when restarting the node, the custom outputs are gone.
 		for _ in 0..channel_count {
 			let mut channel: Channel<Signer> = Channel::read(reader, (&args.keys_manager, best_block_height))?;
 			let funding_txo = channel.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
@@ -7031,6 +7525,15 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				session_privs: [session_priv].iter().cloned().collect()
 			};
 			if pending_outbound_payments_compat.insert(PaymentId(session_priv), payment).is_some() {
+				return Err(DecodeError::InvalidValue)
+			};
+		}
+
+		let custom_outputs_count: u64 = Readable::read(reader)?;
+		let mut custom_outputs: HashMap<CustomOutputId, CustomOutput> =
+			HashMap::with_capacity(cmp::min(custom_outputs_count as usize, MAX_ALLOC_SIZE/32));
+		for _ in 0..custom_outputs_count {
+			if custom_outputs.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
 				return Err(DecodeError::InvalidValue)
 			};
 		}
@@ -7243,6 +7746,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			}
 		}
 
+
 		let channel_manager = ChannelManager {
 			genesis_hash,
 			fee_estimator: bounded_fee_estimator,
@@ -7260,6 +7764,8 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			inbound_payment_key: expanded_inbound_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+
+			custom_outputs: Mutex::new(custom_outputs),
 
 			forward_htlcs: Mutex::new(forward_htlcs),
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
@@ -8017,7 +8523,7 @@ pub mod bench {
 				expect_payment_claimed!(NodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {
-					MessageSendEvent::UpdateHTLCs { node_id, updates } => {
+MessageSendEvent::UpdateCommitmentOutputs { node_id, updates } => {
 						assert_eq!(node_id, $node_a.get_our_node_id());
 						$node_a.handle_update_fulfill_htlc(&$node_b.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 						$node_a.handle_commitment_signed(&$node_b.get_our_node_id(), &updates.commitment_signed);

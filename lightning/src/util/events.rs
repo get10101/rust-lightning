@@ -15,18 +15,17 @@
 //! few other things.
 
 use crate::chain::keysinterface::SpendableOutputDescriptor;
-use crate::ln::chan_utils::HTLCOutputInCommitment;
-use crate::ln::channelmanager::PaymentId;
+use crate::ln::channelmanager::{PaymentId, CustomOutputId};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::msgs::{self, CommitmentSigned, RevokeAndACK};
 use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, VecReadWrapper, VecWriteWrapper};
 use crate::routing::router::{RouteHop, RouteParameters};
 
-use bitcoin::{PackedLockTime, Transaction, OutPoint};
+use bitcoin::{PackedLockTime, Transaction};
 use bitcoin::blockdata::script::Script;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -698,6 +697,27 @@ pub enum Event {
 	/// LDK does not currently generate this event. It is limited to the scope of channels with
 	/// anchor outputs, which will be introduced in a future release.
 	BumpTransaction(BumpTransactionEvent),
+	/// The remote node sent a request to add a custom output.
+	///
+	/// We expect the library consumer to verify signatures based on the custom output on the
+	/// application layer, before they continue with the protocol.
+	RemoteSentAddCustomOutputEvent {
+		/// Custom output ID.
+		custom_output_id: CustomOutputId
+	},
+	/// The remote node sent their signature for a commitment transaction which includes at
+	/// least one custom output.
+	///
+	/// We expect the library consumer to verify signatures based on the custom output, on the
+	/// application layer before they send their own commitment signature to the remote node.
+	RemoteSentCustomOutputCommitmentSignature {
+		/// TODO(10101): add doc
+		public_key_remote: PublicKey,
+		/// TODO(10101): add doc
+		commitment_signed: CommitmentSigned,
+		/// TODO(10101): add doc
+		revoke_and_ack: RevokeAndACK,
+	},
 }
 
 impl Writeable for Event {
@@ -861,6 +881,24 @@ impl Writeable for Event {
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
+			&Event::RemoteSentAddCustomOutputEvent { custom_output_id } => {
+				29u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, custom_output_id, required),
+				})
+			}
+			&Event::RemoteSentCustomOutputCommitmentSignature { ref public_key_remote, ref commitment_signed, ref revoke_and_ack  } => {
+				let public_key_remote = public_key_remote.clone();
+				let commitment_signed = commitment_signed.clone();
+				let revoke_and_ack = revoke_and_ack.clone();
+
+				31u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, public_key_remote, required),
+					(2, commitment_signed, required),
+					(4, revoke_and_ack, required),
+				})
+			}
 		}
 		Ok(())
 	}
@@ -1138,6 +1176,38 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			29u8 => {
+				let f = || {
+					let mut custom_output_id = CustomOutputId([0; 32]);
+					read_tlv_fields!(reader, {
+						(0, custom_output_id, required)
+					});
+					Ok(Some(Event::RemoteSentAddCustomOutputEvent { custom_output_id }))
+				};
+				f()
+			}
+			31u8 => {
+				let f = || {
+					let mut public_key_remote = PublicKey::from_slice(&[0;64]).unwrap();
+					let mut commitment_signed = CommitmentSigned {
+						channel_id: [0; 32],
+						signature: bitcoin::secp256k1::ecdsa::Signature::from_compact(&[0;64]).unwrap(),
+						htlc_signatures: Vec::new()
+					};
+					let mut revoke_and_ack = RevokeAndACK {
+						channel_id: [0; 32],
+						per_commitment_secret: [0; 32],
+						next_per_commitment_point: PublicKey::from_slice(&[0;64]).unwrap(),
+					};
+					read_tlv_fields!(reader, {
+						(0, public_key_remote, required),
+						(2, commitment_signed, required),
+						(4, revoke_and_ack, required)
+					});
+					Ok(Some(Event::RemoteSentCustomOutputCommitmentSignature { public_key_remote, commitment_signed, revoke_and_ack  }))
+				};
+				f()
+			}
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -1162,6 +1232,13 @@ impl MaybeReadable for Event {
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
 #[derive(Clone, Debug)]
 pub enum MessageSendEvent {
+	/// Used to indicate that we've added a custom output locally.
+	AddCustomOutput {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: msgs::UpdateAddCustomOutput,
+	},
 	/// Used to indicate that we've accepted a channel open and should send the accept_channel
 	/// message provided to the given peer.
 	SendAcceptChannel {
@@ -1206,14 +1283,16 @@ pub enum MessageSendEvent {
 		/// The announcement_signatures message which should be sent.
 		msg: msgs::AnnouncementSignatures,
 	},
-	/// Used to indicate that a series of HTLC update messages, as well as a commitment_signed
+	/// Used to indicate that a series of commitment output update messages, as well as a commitment_signed
 	/// message should be sent to the peer with the given node_id.
-	UpdateHTLCs {
+	UpdateCommitmentOutputs {
 		/// The node_id of the node which should receive these message(s)
 		node_id: PublicKey,
 		/// The update messages which should be sent. ALL messages in the struct should be sent!
 		updates: msgs::CommitmentUpdate,
 	},
+	/// Used to indicate that a series of custom output update messages, as well as a
+	/// commitment_signed message should be sent to the peer with the given node_id.
 	/// Used to indicate that a revoke_and_ack message should be sent to the peer with the given node_id.
 	SendRevokeAndACK {
 		/// The node_id of the node which should receive this message

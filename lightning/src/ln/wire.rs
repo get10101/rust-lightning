@@ -62,7 +62,9 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	ClosingSigned(msgs::ClosingSigned),
 	OnionMessage(msgs::OnionMessage),
 	UpdateAddHTLC(msgs::UpdateAddHTLC),
+	UpdateAddCustomOutput(msgs::UpdateAddCustomOutput),
 	UpdateFulfillHTLC(msgs::UpdateFulfillHTLC),
+	UpdateRemoveCustomOutput(msgs::UpdateRemoveCustomOutput),
 	UpdateFailHTLC(msgs::UpdateFailHTLC),
 	UpdateFailMalformedHTLC(msgs::UpdateFailMalformedHTLC),
 	CommitmentSigned(msgs::CommitmentSigned),
@@ -103,6 +105,8 @@ impl<T> Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::ClosingSigned(ref msg) => msg.type_id(),
 			&Message::OnionMessage(ref msg) => msg.type_id(),
 			&Message::UpdateAddHTLC(ref msg) => msg.type_id(),
+			&Message::UpdateAddCustomOutput(ref msg) => msg.type_id(),
+			&Message::UpdateRemoveCustomOutput(ref msg) => msg.type_id(),
 			&Message::UpdateFulfillHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailHTLC(ref msg) => msg.type_id(),
 			&Message::UpdateFailMalformedHTLC(ref msg) => msg.type_id(),
@@ -193,8 +197,14 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::UpdateAddHTLC::TYPE => {
 			Ok(Message::UpdateAddHTLC(Readable::read(buffer)?))
 		},
+		msgs::UpdateAddCustomOutput::TYPE => {
+			Ok(Message::UpdateAddCustomOutput(Readable::read(buffer)?))
+		},
 		msgs::UpdateFulfillHTLC::TYPE => {
 			Ok(Message::UpdateFulfillHTLC(Readable::read(buffer)?))
+		},
+		msgs::UpdateRemoveCustomOutput::TYPE => {
+			Ok(Message::UpdateRemoveCustomOutput(Readable::read(buffer)?))
 		},
 		msgs::UpdateFailHTLC::TYPE => {
 			Ok(Message::UpdateFailHTLC(Readable::read(buffer)?))
@@ -419,6 +429,14 @@ impl Encode for msgs::ReplyChannelRange {
 
 impl Encode for msgs::GossipTimestampFilter {
 	const TYPE: u16 = 265;
+}
+
+impl Encode for msgs::UpdateAddCustomOutput {
+	const TYPE: u16 = 266;
+}
+
+impl Encode for msgs::UpdateRemoveCustomOutput {
+	const TYPE: u16 = 267;
 }
 
 #[cfg(test)]

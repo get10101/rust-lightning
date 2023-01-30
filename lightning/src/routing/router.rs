@@ -14,7 +14,7 @@
 
 use bitcoin::secp256k1::PublicKey;
 
-use crate::ln::channelmanager::ChannelDetails;
+use crate::ln::channelmanager::{ChannelDetails, CustomOutputId};
 use crate::ln::features::{ChannelFeatures, InvoiceFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::routing::gossip::{DirectedChannelInfoWithUpdate, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -76,6 +76,28 @@ pub struct Route {
 	///
 	/// [`Event::PaymentPathFailed`]: crate::util::events::Event::PaymentPathFailed
 	pub payment_params: Option<PaymentParameters>,
+}
+
+/// Details needed to create a custom output with peer.
+pub struct AddCustomOutputRouteDetails {
+	/// The channel to which the custom output is added.
+	pub short_channel_id: u64,
+	/// The node ID of the counterparty in the channel.
+	pub pk_counterparty: PublicKey,
+	/// The amount that the local node (we) provide for the custom output.
+	pub local_amount_msats: u64,
+	/// The amount that our counterparty (the listener) provides for the custom output.
+	pub amount_counterparty_msat: u64,
+	/// The CLTV expiry of the custom output.
+	pub cltv_expiry: u32
+}
+
+/// Details needed to remove a custom output with peer.
+pub struct RemoveCustomOutputDetails {
+	/// The id of the custom output which is mean to be removed
+	pub custom_output_id: CustomOutputId,
+	/// The amount that the local node (we) provide for the custom output.
+	pub local_amount_msats: u64,
 }
 
 pub(crate) trait RoutePath {
@@ -1719,7 +1741,7 @@ where L::Target: Logger {
 	for idx in 0..(selected_route.len() - 1) {
 		if idx + 1 >= selected_route.len() { break; }
 		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id)),
-		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id))) {
+			      selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.short_channel_id(), h.0.node_id))) {
 			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
 			selected_route[idx].update_value_and_recompute_fees(new_value);
 			selected_route.remove(idx + 1);

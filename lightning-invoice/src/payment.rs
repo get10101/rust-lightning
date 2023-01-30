@@ -64,6 +64,10 @@
 //! #     fn send_spontaneous_payment(
 //! #         &self, route: &Route, payment_preimage: PaymentPreimage
 //! #     ) -> Result<PaymentId, PaymentSendFailure> { unimplemented!() }
+//!
+//! #   fn add_custom_output(&self, route: &Route) -> Result<(), String> {
+//! #        todo!()
+//! #   }
 //! #     fn retry_payment(
 //! #         &self, route: &Route, payment_id: PaymentId
 //! #     ) -> Result<(), PaymentSendFailure> { unimplemented!() }
@@ -107,7 +111,7 @@
 //!     match event {
 //!         Event::PaymentPathFailed { .. } => println!("payment failed after retries"),
 //!         Event::PaymentSent { .. } => println!("payment successful"),
-//!         _ => {},
+//!         _ => {}
 //!     }
 //! };
 //! # let payer = FakePayer {};
@@ -138,14 +142,15 @@ use crate::Invoice;
 
 use bitcoin_hashes::Hash;
 use bitcoin_hashes::sha256::Hash as Sha256;
+use bitcoin::Script;
 
 use crate::prelude::*;
 use lightning::io;
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, PaymentId, PaymentSendFailure};
-use lightning::ln::msgs::LightningError;
+use lightning::ln::channelmanager::{ChannelDetails, CustomOutputId, PaymentId, PaymentSendFailure, RemoveCustomOutputError, CustomOutputDetails};
+use lightning::ln::msgs::{LightningError, ErrorAction};
 use lightning::routing::gossip::NodeId;
-use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters};
+use lightning::routing::router::{PaymentParameters, Route, RouteHop, RouteParameters, AddCustomOutputRouteDetails, RemoveCustomOutputDetails};
 use lightning::util::errors::APIError;
 use lightning::util::events::{Event, EventHandler};
 use lightning::util::logger::Logger;
@@ -259,6 +264,16 @@ pub trait Payer {
 		&self, route: &Route, payment_preimage: PaymentPreimage
 	) -> Result<PaymentId, PaymentSendFailure>;
 
+	/// Adds a custom output over the Lightning Network using the given [`Route`].
+	fn add_custom_output(
+		&self, route_details: AddCustomOutputRouteDetails, script: Script
+	) -> Result<CustomOutputDetails, String>;
+
+	/// Removes a custom output with the provided values.
+	fn remove_custom_output(
+		&self, route_details: RemoveCustomOutputDetails,
+	) -> Result<(), RemoveCustomOutputError>;
+
 	/// Retries a failed payment path for the [`PaymentId`] using the given [`Route`].
 	fn retry_payment(&self, route: &Route, payment_id: PaymentId) -> Result<(), PaymentSendFailure>;
 
@@ -273,6 +288,15 @@ pub trait Router {
 		&self, payer: &PublicKey, route_params: &RouteParameters, payment_hash: &PaymentHash,
 		first_hops: Option<&[&ChannelDetails]>, inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError>;
+	/// Gets custom output route details.
+	fn add_custom_output_route_details(
+		&self, local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+	) -> Result<AddCustomOutputRouteDetails, LightningError>;
+
+	/// Gets custom output route details to remove a custom output.
+	fn remove_custom_output_route_details(
+		&self, custom_output_id: CustomOutputId, local_amount_msats: u64, channel_details: ChannelDetails,
+	) -> Result<RemoveCustomOutputDetails, LightningError>;
 	/// Lets the router know that payment through a specific path has failed.
 	fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64);
 	/// Lets the router know that payment through a specific path was successful.
@@ -320,6 +344,12 @@ pub enum PaymentError {
 	Routing(LightningError),
 	/// An error occurring when sending a payment.
 	Sending(PaymentSendFailure),
+	/// An error occurring when creating a custom output.
+	/// TODO(10101): Should remove this variant.
+	CreatingCustomOutput(String),
+	/// An error occurring when creating a custom output.
+	/// TODO(10101): Should remove this variant.
+	RemovingCustomOutput(RemoveCustomOutputError),
 }
 
 impl<P: Deref, R: Router, L: Deref, E: EventHandler, T: Time> InvoicePayerUsingTime<P, R, L, E, T>
@@ -431,6 +461,71 @@ where
 		};
 		self.pay_internal(&route_params, payment_hash, send_payment)
 			.map_err(|e| { self.payment_cache.lock().unwrap().remove(&payment_hash); e })
+	}
+
+	/// TODO(10101): Docs
+	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
+	pub fn add_custom_output(
+		&self, pubkey: PublicKey, amount_local_msats: u64, amount_remote_msats: u64, final_cltv_expiry_delta: u32, script: Script
+	) -> Result<CustomOutputDetails, PaymentError> {
+		// TODO: We might have more than one channel with the peer identified by the
+		// `pubkey` argument. We will need to use a heuristic to select a channel among all
+		// the candidates
+		let channel_details = self.payer
+			.first_hops()
+			.iter()
+			.find(|details| details.counterparty.node_id == pubkey)
+			.ok_or_else(|| PaymentError::Routing(
+				LightningError {
+					err: "Cannot create custom output: No channel with peer {pubkey}".to_owned(),
+					action: ErrorAction::IgnoreError
+				}
+			))?
+			.clone();
+
+		let route_details = self.router.add_custom_output_route_details(
+			&self.payer.node_id(), // The node ID of the sender OK
+			amount_local_msats,
+			amount_remote_msats,
+			final_cltv_expiry_delta,
+			channel_details,
+		).map_err(|e| PaymentError::Routing(e))?;
+
+		let custom_output_details = self.payer.add_custom_output(route_details, script).map_err(PaymentError::CreatingCustomOutput)?;
+
+		Ok(custom_output_details)
+	}
+
+
+	/// TODO(10101): Docs
+	/// TODO(10101): Probably shouldn't be defined on the [`InvoicePayer`].
+	pub fn remove_custom_output(
+		&self, pubkey: PublicKey, custom_output_id: CustomOutputId, amount_local_msats: u64
+	) -> Result<(), PaymentError> {
+		// TODO: We might have more than one channel with the peer identified by the
+		// `pubkey` argument. We will need to use a heuristic to select a channel among all
+		// the candidates
+		let channel_details = self.payer
+			.first_hops()
+			.iter()
+			.find(|details| details.counterparty.node_id == pubkey)
+			.ok_or_else(|| PaymentError::Routing(
+				LightningError {
+					err: "Cannot create custom output: No channel with peer {pubkey}".to_owned(),
+					action: ErrorAction::IgnoreError
+				}
+			))?
+			.clone();
+
+		let route_details = self.router.remove_custom_output_route_details(
+			custom_output_id,
+			amount_local_msats,
+			channel_details,
+		).map_err(|e| PaymentError::Routing(e))?;
+
+		self.payer.remove_custom_output(route_details).map_err(PaymentError::RemovingCustomOutput)?;
+
+		Ok(())
 	}
 
 	fn pay_internal<F: FnOnce(&Route) -> Result<PaymentId, PaymentSendFailure> + Copy>(
@@ -1845,6 +1940,18 @@ mod tests {
 			})
 		}
 
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
+		}
+
 		fn notify_payment_path_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 			self.scorer.lock().payment_path_failed(path, short_channel_id);
 		}
@@ -1860,6 +1967,7 @@ mod tests {
 		fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 			self.scorer.lock().probe_failed(path, short_channel_id);
 		}
+
 	}
 
 	struct FailingRouter;
@@ -1872,13 +1980,25 @@ mod tests {
 			Err(LightningError { err: String::new(), action: ErrorAction::IgnoreError })
 		}
 
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
+		}
+
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 
 		fn notify_payment_path_successful(&self, _path: &[&RouteHop]) {}
 
 		fn notify_payment_probe_successful(&self, _path: &[&RouteHop]) {}
 
-		fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
+fn notify_payment_probe_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}
 	}
 
 	struct TestScorer {
@@ -2113,6 +2233,18 @@ mod tests {
 			self.check_attempts()
 		}
 
+		fn add_custom_output(
+			&self, _route_details: AddCustomOutputRouteDetails, _script: Script
+		) -> Result<CustomOutputDetails, String> {
+			todo!()
+		}
+
+		fn remove_custom_output(
+			&self, _route_details: RemoveCustomOutputDetails,
+		) -> Result<(), RemoveCustomOutputError> {
+			todo!()
+		}
+
 		fn retry_payment(
 			&self, route: &Route, _payment_id: PaymentId
 		) -> Result<(), PaymentSendFailure> {
@@ -2121,6 +2253,7 @@ mod tests {
 		}
 
 		fn abandon_payment(&self, _payment_id: PaymentId) { }
+
 	}
 
 	// *** Full Featured Functional Tests with a Real ChannelManager ***
@@ -2132,6 +2265,18 @@ mod tests {
 			_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs
 		) -> Result<Route, LightningError> {
 			self.0.borrow_mut().pop_front().unwrap()
+		}
+
+		fn add_custom_output_route_details(
+			&self, _dialer_pk: &PublicKey, _local_amount_msats: u64, _remote_amount_msats: u64, _cltv_expiry_delta: u32, _channel_details: ChannelDetails,
+		) -> Result<AddCustomOutputRouteDetails, LightningError> {
+			todo!()
+		}
+
+		fn remove_custom_output_route_details(
+			&self, _custom_output_id: CustomOutputId, _local_amount_msats: u64, _channel_details: ChannelDetails,
+		) -> Result<RemoveCustomOutputDetails, LightningError> {
+			todo!()
 		}
 
 		fn notify_payment_path_failed(&self, _path: &[&RouteHop], _short_channel_id: u64) {}

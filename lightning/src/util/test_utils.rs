@@ -53,6 +53,7 @@ use crate::chain::keysinterface::{InMemorySigner, Recipient, KeyMaterial};
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::Sequence;
+use crate::ln::msgs::UpdateRemoveCustomOutput;
 
 pub struct TestVecWriter(pub Vec<u8>);
 impl Writer for TestVecWriter {
@@ -322,6 +323,12 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	}
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));
+	}
+	fn handle_update_add_custom_output(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddCustomOutput) {
+		self.received_msg(wire::Message::UpdateAddCustomOutput(msg.clone()));
+	}
+	fn handle_update_remove_custom_output(&self, _their_node_id: &PublicKey, msg: &UpdateRemoveCustomOutput) {
+		self.received_msg(wire::Message::UpdateRemoveCustomOutput(msg.clone()));
 	}
 	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		self.received_msg(wire::Message::UpdateFulfillHTLC(msg.clone()));

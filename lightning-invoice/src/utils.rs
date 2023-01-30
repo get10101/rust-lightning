@@ -5,18 +5,19 @@ use crate::payment::{InFlightHtlcs, Payer, Router};
 
 use crate::{prelude::*, Description, InvoiceDescription, Sha256};
 use bech32::ToBase32;
+use bitcoin::Script;
 use bitcoin_hashes::{Hash, sha256};
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::keysinterface::{Recipient, KeysInterface, Sign};
 use lightning::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY};
+use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, PaymentId, PaymentSendFailure, MIN_FINAL_CLTV_EXPIRY, CustomOutputId, RemoveCustomOutputError, CustomOutputDetails};
 #[cfg(feature = "std")]
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
-use lightning::ln::msgs::LightningError;
+use lightning::ln::msgs::{LightningError, ErrorAction};
 use lightning::routing::gossip::{NetworkGraph, NodeId, RoutingFees};
-use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop};
+use lightning::routing::router::{Route, RouteHint, RouteHintHop, RouteParameters, find_route, RouteHop, AddCustomOutputRouteDetails, RemoveCustomOutputDetails};
 use lightning::routing::scoring::{ChannelUsage, LockableScore, Score};
 use lightning::util::logger::Logger;
 use secp256k1::PublicKey;
@@ -583,6 +584,58 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, S: Deref> Router for DefaultR
 	fn notify_payment_probe_failed(&self, path: &[&RouteHop], short_channel_id: u64) {
 		self.scorer.lock().probe_failed(path, short_channel_id);
 	}
+
+	fn add_custom_output_route_details(
+		&self, _local_pk: &PublicKey, local_amount_msats: u64, remote_amount_msats: u64, cltv_expiry: u32, channel_details: ChannelDetails,
+	) -> Result<AddCustomOutputRouteDetails, LightningError> {
+		let ChannelDetails { outbound_capacity_msat, inbound_capacity_msat, short_channel_id, counterparty, .. } = channel_details;
+
+		let short_channel_id = short_channel_id.ok_or_else(|| LightningError {
+			err: format!("Cannot create custom output if funding transaction has not been confirmed yet"),
+			action: ErrorAction::IgnoreError
+		})?;
+
+		if local_amount_msats > outbound_capacity_msat {
+			return Err(LightningError {
+				err: format!(
+					"Cannot create custom output with insufficient outbound liquidity.
+					 Needed: {local_amount_msats};
+					 available: {outbound_capacity_msat}"
+				),
+				action: ErrorAction::IgnoreError
+			});
+		}
+
+		if remote_amount_msats > inbound_capacity_msat {
+			return Err(LightningError {
+				err: format!(
+					"Cannot create custom output with insufficient inbound liquidity.
+					 Needed: {remote_amount_msats};
+					 available: {inbound_capacity_msat}"
+				),
+				action: ErrorAction::IgnoreError
+			});
+		}
+
+
+		Ok(AddCustomOutputRouteDetails {
+			short_channel_id, pk_counterparty: counterparty.node_id, local_amount_msats, amount_counterparty_msat: remote_amount_msats, cltv_expiry })
+	}
+
+	fn remove_custom_output_route_details(&self, custom_output_id: CustomOutputId, local_amount_msats: u64, channel_details: ChannelDetails) -> Result<RemoveCustomOutputDetails, LightningError> {
+		let ChannelDetails { short_channel_id, .. } = channel_details;
+
+		let _short_channel_id = short_channel_id.ok_or_else(|| LightningError {
+			err: format!("Cannot create custom output if funding transaction has not been confirmed yet"),
+			action: ErrorAction::IgnoreError
+		})?;
+
+		// TODO(10101): we should do some sanity checks here for the amounts
+
+		Ok(RemoveCustomOutputDetails { custom_output_id, local_amount_msats })
+	}
+
+
 }
 
 impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Payer for ChannelManager<Signer, M, T, K, F, L>
@@ -605,6 +658,22 @@ where
 		&self, route: &Route, payment_hash: PaymentHash, payment_secret: &Option<PaymentSecret>
 	) -> Result<PaymentId, PaymentSendFailure> {
 		self.send_payment(route, payment_hash, payment_secret)
+	}
+
+	fn add_custom_output(
+		&self, route_details: AddCustomOutputRouteDetails, script: Script
+	) -> Result<CustomOutputDetails, String> {
+		let AddCustomOutputRouteDetails { short_channel_id, pk_counterparty, local_amount_msats: amount_us_msat, amount_counterparty_msat, cltv_expiry } = route_details;
+
+		self.add_custom_output(short_channel_id, pk_counterparty, amount_us_msat, amount_counterparty_msat, cltv_expiry, script)
+	}
+
+	fn remove_custom_output(
+		&self, route_details: RemoveCustomOutputDetails,
+	) -> Result<(), RemoveCustomOutputError> {
+		let RemoveCustomOutputDetails { custom_output_id, local_amount_msats } = route_details;
+
+		self.remove_custom_output(custom_output_id, local_amount_msats)
 	}
 
 	fn send_spontaneous_payment(
@@ -1054,7 +1123,7 @@ mod test {
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			let fwd_idx = match events[0] {
-				MessageSendEvent::UpdateHTLCs { node_id, .. } => {
+				MessageSendEvent::UpdateCommitmentOutputs { node_id, .. } => {
 					if node_id == nodes[1].node.get_our_node_id() {
 						1
 					} else { 2 }

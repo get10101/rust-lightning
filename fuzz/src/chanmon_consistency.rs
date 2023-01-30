@@ -600,7 +600,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				let expect_drop_id = if let Some(id) = expect_drop_node { Some(nodes[id].get_our_node_id()) } else { None };
 				for event in $excess_events {
 					let push_a = match event {
-						events::MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
+						events::MessageSendEvent::UpdateCommitmentOutputs { ref node_id, .. } => {
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -670,7 +670,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				for event in &mut events_iter {
 					had_events = true;
 					match event {
-						events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
+events::MessageSendEvent::UpdateCommitmentOutputs { node_id, updates: CommitmentUpdate { update_add_htlcs, update_fail_htlcs, update_fulfill_htlcs, update_fail_malformed_htlcs, update_fee, commitment_signed } } => {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == node_id {
 									for update_add in update_add_htlcs.iter() {
@@ -708,7 +708,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
 									if $limit_events != ProcessMessages::AllMessages && processed_change {
 										// If we only want to process some messages, don't deliver the CS until later.
-										extra_ev = Some(events::MessageSendEvent::UpdateHTLCs { node_id, updates: CommitmentUpdate {
+extra_ev = Some(events::MessageSendEvent::UpdateCommitmentOutputs { node_id, updates: CommitmentUpdate {
 											update_add_htlcs: Vec::new(),
 											update_fail_htlcs: Vec::new(),
 											update_fulfill_htlcs: Vec::new(),
@@ -783,7 +783,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				if $counterparty_id == 0 {
 					for event in nodes[0].get_and_clear_pending_msg_events() {
 						match event {
-							events::MessageSendEvent::UpdateHTLCs { .. } => {},
+events::MessageSendEvent::UpdateCommitmentOutputs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendChannelReady { .. } => {},
@@ -804,7 +804,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out) {
 				} else {
 					for event in nodes[2].get_and_clear_pending_msg_events() {
 						match event {
-							events::MessageSendEvent::UpdateHTLCs { .. } => {},
+events::MessageSendEvent::UpdateCommitmentOutputs { .. } => {},
 							events::MessageSendEvent::SendRevokeAndACK { .. } => {},
 							events::MessageSendEvent::SendChannelReestablish { .. } => {},
 							events::MessageSendEvent::SendChannelReady { .. } => {},
