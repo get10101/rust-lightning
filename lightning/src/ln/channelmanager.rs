@@ -1880,7 +1880,7 @@ where
 			chan.set_value_satoshis(channel_value_satoshis);
 			chan.set_value_to_self(value_to_self_msat);
 
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(original_funding_outpoint, *funding_outpoint) {
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(original_funding_outpoint, *funding_outpoint, channel_value_satoshis) {
 				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
 			}
 

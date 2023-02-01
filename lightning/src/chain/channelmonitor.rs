@@ -1184,7 +1184,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			txid, htlc_outputs, commitment_number, their_per_commitment_point, logger)
 	}
 
-	pub(crate) fn update_funding_info(&self, fund_outpoint: OutPoint) {
+	pub(crate) fn update_funding_info(&self, fund_outpoint: OutPoint, channel_value_satoshis: u64) {
 		let mut inner = self.inner.lock().unwrap();
 		// inner.outputs_to_watch.remove(inner.get_funding_txo());
 		let script = inner.funding_info.1.clone();
@@ -1197,6 +1197,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
 		}
 		inner.funding_info = (fund_outpoint, script);
+		inner.channel_value_satoshis = channel_value_satoshis;
 	}
 
 	#[cfg(test)]
