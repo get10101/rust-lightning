@@ -644,7 +644,7 @@ where C::Target: chain::Filter,
 		persist_res
 	}
 
-	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint) -> ChannelMonitorUpdateStatus {
+	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint, channel_value_satoshis: u64) -> ChannelMonitorUpdateStatus {
 		let mut monitors = self.monitors.write().unwrap();
 		let monitor_opt = monitors.get_mut(&old_funding_txo);
 		match monitor_opt {
@@ -660,7 +660,7 @@ where C::Target: chain::Filter,
 				return ChannelMonitorUpdateStatus::PermanentFailure;
 			},
 			Some(monitor_state) => {
-				monitor_state.monitor.update_funding_info(new_funding_txo);
+				monitor_state.monitor.update_funding_info(new_funding_txo, channel_value_satoshis);
 				return ChannelMonitorUpdateStatus::Completed;
 			}
 		}
