@@ -362,7 +362,7 @@ where C::Target: chain::Filter,
 		let monitor_states = self.monitors.read().unwrap();
 		for (_, monitor_state) in monitor_states.iter().filter(|(funding_outpoint, _)| {
 			for chan in ignored_channels {
-				if chan.funding_txo.as_ref() == Some(funding_outpoint) {
+				if chan.funding_txo.as_ref() == Some(funding_outpoint) || chan.original_funding_outpoint.as_ref() == Some(funding_outpoint) {
 					return false;
 				}
 			}

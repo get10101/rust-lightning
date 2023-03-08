@@ -1240,6 +1240,8 @@ pub struct ChannelDetails {
 	pub holder_funding_pubkey: PublicKey,
 	///
 	pub counter_funding_pubkey: PublicKey,
+	///
+	pub original_funding_outpoint: Option<OutPoint>,
 }
 
 impl ChannelDetails {
@@ -1810,6 +1812,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					funding_redeemscript,
 					holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
 					counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
+					original_funding_outpoint: channel.channel_transaction_parameters.original_funding_outpoint,
 				});
 			}
 		}
@@ -6765,7 +6768,8 @@ impl Writeable for ChannelDetails {
 			(37, user_channel_id_high_opt, option),
 			(38, self.funding_redeemscript, required),
 			(39, self.holder_funding_pubkey, required),
-			(40, self.counter_funding_pubkey, required)
+			(40, self.counter_funding_pubkey, required),
+			(41, self.original_funding_outpoint, option)
 		});
 		Ok(())
 	}
@@ -6804,7 +6808,8 @@ impl Readable for ChannelDetails {
 			(38, fee_rate_per_kw, required),
 			(39, funding_redeemscript, required),
 			(40, holder_funding_pubkey, required),
-			(41, counter_funding_pubkey, required)
+			(41, counter_funding_pubkey, required),
+			(42, original_funding_outpoint, option)
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6842,6 +6847,7 @@ impl Readable for ChannelDetails {
 			funding_redeemscript: funding_redeemscript.0.unwrap(),
 			holder_funding_pubkey: holder_funding_pubkey.0.unwrap(),
 			counter_funding_pubkey: counter_funding_pubkey.0.unwrap(),
+			original_funding_outpoint,
 		})
 	}
 }
