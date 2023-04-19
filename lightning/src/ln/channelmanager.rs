@@ -6046,7 +6046,7 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values() {
-				if let (Some(funding_txo), Some(block_hash)) = (chan.get_funding_txo(), chan.get_funding_tx_confirmed_in()) {
+				if let (Some(funding_txo), Some(block_hash)) = (chan.get_original_funding_txo(), chan.get_funding_tx_confirmed_in()) {
 					res.push((funding_txo.txid, Some(block_hash)));
 				}
 			}
@@ -6057,7 +6057,7 @@ where
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		self.do_chain_event(None, |channel| {
-			if let Some(funding_txo) = channel.get_funding_txo() {
+			if let Some(funding_txo) = channel.get_original_funding_txo() {
 				if funding_txo.txid == *txid {
 					channel.funding_transaction_unconfirmed(&self.logger).map(|()| (None, Vec::new(), None))
 				} else { Ok((None, Vec::new(), None)) }
