@@ -461,7 +461,9 @@ pub struct ChannelReestablish {
 	/// The next commitment number for the recipient
 	pub next_remote_commitment_number: u64,
 	/// Optionally, a field proving that next_remote_commitment_number-1 has been revoked
-	pub data_loss_protect: OptionalField<DataLossProtect>,
+	pub data_loss_protect: DataLossProtect,
+	///
+	pub sub_channel_state: Option<u8>,
 }
 
 /// An [`announcement_signatures`] message to be sent to or received from a peer.
@@ -1321,13 +1323,10 @@ impl Writeable for ChannelReestablish {
 		self.channel_id.write(w)?;
 		self.next_local_commitment_number.write(w)?;
 		self.next_remote_commitment_number.write(w)?;
-		match self.data_loss_protect {
-			OptionalField::Present(ref data_loss_protect) => {
-				(*data_loss_protect).your_last_per_commitment_secret.write(w)?;
-				(*data_loss_protect).my_current_per_commitment_point.write(w)?;
-			},
-			OptionalField::Absent => {}
-		}
+		self.data_loss_protect.write(w)?;
+		encode_tlv_stream!(w, {
+			(17, self.sub_channel_state, option)
+		});
 		Ok(())
 	}
 }
@@ -1338,20 +1337,20 @@ impl Readable for ChannelReestablish{
 			channel_id: Readable::read(r)?,
 			next_local_commitment_number: Readable::read(r)?,
 			next_remote_commitment_number: Readable::read(r)?,
-			data_loss_protect: {
-				match <[u8; 32] as Readable>::read(r) {
-					Ok(your_last_per_commitment_secret) =>
-						OptionalField::Present(DataLossProtect {
-							your_last_per_commitment_secret,
-							my_current_per_commitment_point: Readable::read(r)?,
-						}),
-					Err(DecodeError::ShortRead) => OptionalField::Absent,
-					Err(e) => return Err(e)
-				}
-			}
+			data_loss_protect: Readable::read(r)?,
+			sub_channel_state: {
+				let mut sub_channel_state: Option<u8> = None;
+				decode_tlv_stream!(r, { (17, sub_channel_state, option) } );
+				sub_channel_state
+			},
 		})
 	}
 }
+
+impl_writeable!(DataLossProtect, {
+	your_last_per_commitment_secret,
+	my_current_per_commitment_point
+});
 
 impl_writeable_msg!(ClosingSigned,
 	{ channel_id, fee_satoshis, signature },
@@ -2070,21 +2069,21 @@ mod tests {
 	use crate::prelude::*;
 	use core::convert::TryFrom;
 
-	#[test]
-	fn encoding_channel_reestablish_no_secret() {
-		let cr = msgs::ChannelReestablish {
-			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
-			next_local_commitment_number: 3,
-			next_remote_commitment_number: 4,
-			data_loss_protect: OptionalField::Absent,
-		};
-
-		let encoded_value = cr.encode();
-		assert_eq!(
-			encoded_value,
-			vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
-		);
-	}
+	// #[test]
+	// fn encoding_channel_reestablish_no_secret() {
+	// 	let cr = msgs::ChannelReestablish {
+	// 		channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
+	// 		next_local_commitment_number: 3,
+	// 		next_remote_commitment_number: 4,
+	// 		data_loss_protect: OptionalField::Absent,
+	// 	};
+	//
+	// 	let encoded_value = cr.encode();
+	// 	assert_eq!(
+	// 		encoded_value,
+	// 		vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 4]
+	// 	);
+	// }
 
 	#[test]
 	fn encoding_channel_reestablish_with_secret() {
@@ -2097,7 +2096,8 @@ mod tests {
 			channel_id: [4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0],
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			data_loss_protect: OptionalField::Present(msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key}),
+			data_loss_protect: msgs::DataLossProtect { your_last_per_commitment_secret: [9;32], my_current_per_commitment_point: public_key},
+			sub_channel_state: None,
 		};
 
 		let encoded_value = cr.encode();
