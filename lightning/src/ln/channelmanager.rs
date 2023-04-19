@@ -1242,6 +1242,8 @@ pub struct ChannelDetails {
 	pub counter_funding_pubkey: PublicKey,
 	///
 	pub original_funding_outpoint: Option<OutPoint>,
+	///
+	pub value_to_self_msat: u64,
 }
 
 impl ChannelDetails {
@@ -1813,6 +1815,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
 					counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
 					original_funding_outpoint: channel.channel_transaction_parameters.original_funding_outpoint,
+					value_to_self_msat: channel.get_value_to_self(),
 				});
 			}
 		}
@@ -1970,6 +1973,27 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		}
 	}
 
+	fn reset_fund_output_internal(&self, channel_id: &[u8; 32], channel_value: u64, value_to_self_msat: u64) -> Result<(), APIError> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(channel_id.clone()) {
+			let mut chan = chan.get_mut();
+
+			if chan.channel_transaction_parameters.original_funding_outpoint.is_none() {
+				return Err(APIError::APIMisuseError{ err: "Cannot reset funding output as it was not updated".to_string() });
+			}
+
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+			chan.channel_transaction_parameters.funding_outpoint = chan.channel_transaction_parameters.original_funding_outpoint.take();
+			chan.set_value_satoshis(channel_value);
+			chan.set_value_to_self(value_to_self_msat);
+			return Ok(());
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+
+	}
+
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
@@ -2098,6 +2122,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	pub fn sign_with_fund_key_callback<SF>(&self, channel_id: &[u8; 32], cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
 		self.sign_with_fund_key_callback_internal(channel_id, cb)
+	}
+
+	///
+	pub fn reset_fund_output(&self, channel_id: &[u8; 32], channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<(), APIError> {
+		self.reset_fund_output_internal(channel_id, channel_value_satoshis, value_to_self_msat)
 	}
 
 	#[inline]
@@ -6766,10 +6795,12 @@ impl Writeable for ChannelDetails {
 			(33, self.inbound_htlc_minimum_msat, option),
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
-			(38, self.funding_redeemscript, required),
-			(39, self.holder_funding_pubkey, required),
-			(40, self.counter_funding_pubkey, required),
-			(41, self.original_funding_outpoint, option)
+			(38, self.fee_rate_per_kw, required),
+			(39, self.funding_redeemscript, required),
+			(40, self.holder_funding_pubkey, required),
+			(41, self.counter_funding_pubkey, required),
+			(42, self.original_funding_outpoint, option),
+			(43, self.value_to_self_msat, required)
 		});
 		Ok(())
 	}
@@ -6809,7 +6840,8 @@ impl Readable for ChannelDetails {
 			(39, funding_redeemscript, required),
 			(40, holder_funding_pubkey, required),
 			(41, counter_funding_pubkey, required),
-			(42, original_funding_outpoint, option)
+			(42, original_funding_outpoint, option),
+			(43, value_to_self_msat, required)
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -6848,6 +6880,7 @@ impl Readable for ChannelDetails {
 			holder_funding_pubkey: holder_funding_pubkey.0.unwrap(),
 			counter_funding_pubkey: counter_funding_pubkey.0.unwrap(),
 			original_funding_outpoint,
+			value_to_self_msat: value_to_self_msat.0.unwrap(),
 		})
 	}
 }
