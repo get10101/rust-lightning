@@ -1888,7 +1888,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 			chan.set_value_to_self(value_to_self_msat);
 
 			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(original_funding_outpoint, *funding_outpoint, channel_value_satoshis) {
-				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() }); 
+				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
 			}
 
 			let (commitment_signed, monitor_update) = chan.send_commitment_no_status_check(&self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
@@ -1968,6 +1968,30 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 		} else {
 			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 		}
+	}
+
+	fn set_funding_output_internal(&self, channel_id: &[u8; 32], funding_outpoint: &OutPoint, channel_value: u64, value_to_self_msat: u64) -> Result<(), APIError> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(channel_id.clone()) {
+			let mut chan = chan.get_mut();
+
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+			let original_funding_outpoint = chan.channel_transaction_parameters.original_funding_outpoint.unwrap_or_else(|| chan.channel_transaction_parameters.funding_outpoint.unwrap());
+			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
+			chan.channel_transaction_parameters.original_funding_outpoint = if &original_funding_outpoint != funding_outpoint {
+				Some(original_funding_outpoint.clone())
+			} else {
+				None
+			};
+
+			chan.set_value_satoshis(channel_value);
+			chan.set_value_to_self(value_to_self_msat);
+			return Ok(());
+		} else {
+			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		}
+
 	}
 
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
@@ -2098,6 +2122,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	///
 	pub fn sign_with_fund_key_callback<SF>(&self, channel_id: &[u8; 32], cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
 		self.sign_with_fund_key_callback_internal(channel_id, cb)
+	}
+
+	///
+	pub fn set_funding_output(&self, channel_id: &[u8; 32], funding_output: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<(), APIError> {
+		self.set_funding_output_internal(channel_id, funding_output, channel_value_satoshis, value_to_self_msat)
 	}
 
 	#[inline]
@@ -6766,10 +6795,11 @@ impl Writeable for ChannelDetails {
 			(33, self.inbound_htlc_minimum_msat, option),
 			(35, self.inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
-			(38, self.funding_redeemscript, required),
-			(39, self.holder_funding_pubkey, required),
-			(40, self.counter_funding_pubkey, required),
-			(41, self.original_funding_outpoint, option)
+			(38, self.fee_rate_per_kw, required),
+			(39, self.funding_redeemscript, required),
+			(40, self.holder_funding_pubkey, required),
+			(41, self.counter_funding_pubkey, required),
+			(42, self.original_funding_outpoint, option),
 		});
 		Ok(())
 	}
@@ -6809,7 +6839,7 @@ impl Readable for ChannelDetails {
 			(39, funding_redeemscript, required),
 			(40, holder_funding_pubkey, required),
 			(41, counter_funding_pubkey, required),
-			(42, original_funding_outpoint, option)
+			(42, original_funding_outpoint, option),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
