@@ -1853,8 +1853,8 @@ where
 		});
 	}
 
-	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
-		if value_to_self_msat > channel_value_satoshis * 1000 {
+	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, own_balance: u64) -> Result<CommitmentSigned, APIError> {
+		if own_balance > channel_value_satoshis * 1000 {
 			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
 		}
 
@@ -1867,29 +1867,23 @@ where
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan_entry.get_mut();
-			if chan.get_counterparty_node_id() != *counter_party_node_id {
-				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-			}
 			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-			let original_funding_outpoint = chan.channel_transaction_parameters.original_funding_outpoint.unwrap_or_else(|| chan.channel_transaction_parameters.funding_outpoint.unwrap());
-			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
-			chan.channel_transaction_parameters.original_funding_outpoint = if &original_funding_outpoint != funding_outpoint {
-				Some(original_funding_outpoint.clone())
-			} else {
-				None
-			};
+			let original_funding_txo = chan.get_original_funding_txo().unwrap();
+			let monitor_update = chan.set_funding_outpoint(funding_outpoint, channel_value_satoshis, own_balance, true, &self.logger);
+			let update_res = self.chain_monitor.update_channel(original_funding_txo, monitor_update.unwrap());
+			if ChannelMonitorUpdateStatus::Completed != update_res {
+				return Err(APIError::APIMisuseError { err: "Could not update channel funding outpoint.".to_string() });
+			}
 
-			chan.set_value_satoshis(channel_value_satoshis);
-			chan.set_value_to_self(value_to_self_msat);
-
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(original_funding_outpoint, *funding_outpoint, channel_value_satoshis) {
+			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(chan.get_original_funding_txo().unwrap(), *funding_outpoint, channel_value_satoshis) {
 				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
 			}
 
-			let (commitment_signed, _) = chan.send_commitment_no_state_update(&self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
+			let res = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
 
-			return Ok(commitment_signed)
+
+			return Ok(res.commitment_update.unwrap().commitment_signed)
 		} else {
 			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 		}
@@ -1926,9 +1920,9 @@ where
 				return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
 			}
 
-			let revoke_and_ack = chan.get_last_revoke_and_ack();
+			let updates = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
 
-			Ok(revoke_and_ack)
+			Ok(updates.raa.unwrap())
 		} else {
 			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 		}
@@ -1956,6 +1950,8 @@ where
 				return Err(APIError::APIMisuseError { err: "Could not update the channel".to_string() });
 			}
 
+			chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
+
 			Ok(())
 		} else {
 			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
@@ -1978,23 +1974,19 @@ where
 		}
 	}
 
-	fn set_funding_output_internal(&self, channel_id: &[u8; 32], funding_outpoint: &OutPoint, channel_value: u64, value_to_self_msat: u64) -> Result<(), APIError> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		if let hash_map::Entry::Occupied(mut chan) = channel_state.by_id.entry(channel_id.clone()) {
-			let mut chan = chan.get_mut();
+	fn set_funding_outpoint_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value: u64, own_balance: u64) -> Result<(), APIError> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
+			let chan = chan.get_mut();
 
 			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-			let original_funding_outpoint = chan.channel_transaction_parameters.original_funding_outpoint.unwrap_or_else(|| chan.channel_transaction_parameters.funding_outpoint.unwrap());
-			chan.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
-			chan.channel_transaction_parameters.original_funding_outpoint = if &original_funding_outpoint != funding_outpoint {
-				Some(original_funding_outpoint.clone())
-			} else {
-				None
-			};
-
-			chan.set_value_satoshis(channel_value);
-			chan.set_value_to_self(value_to_self_msat);
+			chan.set_funding_outpoint(funding_outpoint, channel_value, own_balance, false, &self.logger);
 			return Ok(());
 		} else {
 			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
@@ -2127,8 +2119,8 @@ where
 	}
 
 	///
-	pub fn set_funding_output(&self, channel_id: &[u8; 32], funding_output: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<(), APIError> {
-		self.set_funding_output_internal(channel_id, funding_output, channel_value_satoshis, value_to_self_msat)
+	pub fn set_funding_outpoint(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_output: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<(), APIError> {
+		self.set_funding_outpoint_internal(channel_id, counter_party_node_id, funding_output, channel_value_satoshis, value_to_self_msat)
 	}
 
 	#[inline]

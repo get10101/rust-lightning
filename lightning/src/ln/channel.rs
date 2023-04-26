@@ -4683,17 +4683,28 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 		self.channel_value_satoshis
 	}
 
-	pub fn set_value_satoshis(&mut self, channel_value_satoshis: u64) {
+	pub fn set_funding_outpoint<L: Deref>(&mut self, funding_outpoint: &OutPoint, channel_value_satoshis: u64, own_balance: u64, need_commitment: bool, logger: &L) -> Option<&ChannelMonitorUpdate>
+		where
+		L::Target: Logger
+	{
 		self.channel_value_satoshis = channel_value_satoshis;
 		self.holder_signer.set_channel_value_satoshis(channel_value_satoshis);
-	}
+		self.value_to_self_msat = own_balance + self.pending_outbound_htlcs.iter().map(|x| x.amount_msat).sum::<u64>();
 
-	pub fn get_value_to_self(&self) -> u64 {
-		self.value_to_self_msat
-	}
+		let original_funding_outpoint = self.channel_transaction_parameters.original_funding_outpoint.unwrap_or_else(|| self.channel_transaction_parameters.funding_outpoint.unwrap());
+		self.channel_transaction_parameters.funding_outpoint = Some(funding_outpoint.clone());
+		self.channel_transaction_parameters.original_funding_outpoint = if &original_funding_outpoint != funding_outpoint {
+			Some(original_funding_outpoint.clone())
+		} else {
+			None
+		};
 
-	pub fn set_value_to_self(&mut self, value_to_self_msat: u64) {
-		self.value_to_self_msat = value_to_self_msat + self.pending_outbound_htlcs.iter().map(|x| x.amount_msat).sum::<u64>();
+		if need_commitment {
+			let monitor_update = self.build_commitment_no_status_check(logger);
+			self.monitor_updating_paused(false, true, false, Vec::new(), Vec::new(), Vec::new());
+			self.pending_monitor_updates.push(monitor_update);
+			Some(self.pending_monitor_updates.last().unwrap())
+		} else { None }
 	}
 
 	pub fn get_fee_proportional_millionths(&self) -> u32 {
@@ -5896,7 +5907,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Channel<Signer> {
 
 	/// Only fails in case of signer rejection. Used for channel_reestablish commitment_signed
 	/// generation when we shouldn't change HTLC/channel state.
-	pub(super) fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
+	fn send_commitment_no_state_update<L: Deref>(&self, logger: &L) -> Result<(msgs::CommitmentSigned, (Txid, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>)), ChannelError> where L::Target: Logger {
 		// Get the fee tests from `build_commitment_no_state_update`
 		#[cfg(any(test, fuzzing))]
 		self.build_commitment_no_state_update(logger);
