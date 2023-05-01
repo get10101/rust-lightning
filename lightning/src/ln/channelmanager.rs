@@ -1918,7 +1918,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 			let (revoke_and_ack, _, monitor_update) =
 			match chan.commitment_signed(&commitment_signed, &self.logger) {
-				Err((None, e)) => panic!("{:?}", e),
+				Err((None, e)) => return Err(APIError::APIMisuseError {err: format!("Could not verify commitment signed {:?}", e) }),
 				Err((Some(_), _)) => {
 					assert!(chan.is_awaiting_monitor_update());
 					// let _ = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), update);
