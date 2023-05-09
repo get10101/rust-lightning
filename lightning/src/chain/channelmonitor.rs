@@ -1198,6 +1198,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 		inner.funding_info = (fund_outpoint, script);
 		inner.channel_value_satoshis = channel_value_satoshis;
+		inner.onchain_tx_handler.signer.set_channel_value_satoshis(channel_value_satoshis);
 	}
 
 	#[cfg(test)]
