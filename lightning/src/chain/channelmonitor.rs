@@ -1061,12 +1061,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	pub(crate) fn new(secp_ctx: Secp256k1<secp256k1::All>, keys: Signer, shutdown_script: Option<Script>,
-	                  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
-	                  channel_parameters: &ChannelTransactionParameters,
-	                  funding_redeemscript: Script, channel_value_satoshis: u64,
-	                  commitment_transaction_number_obscure_factor: u64,
-	                  initial_holder_commitment_tx: HolderCommitmentTransaction,
-	                  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
+			  on_counterparty_tx_csv: u16, destination_script: &Script, funding_info: (OutPoint, Script),
+			  channel_parameters: &ChannelTransactionParameters,
+			  funding_redeemscript: Script, channel_value_satoshis: u64,
+			  commitment_transaction_number_obscure_factor: u64,
+			  initial_holder_commitment_tx: HolderCommitmentTransaction,
+			  best_block: BestBlock, counterparty_node_id: PublicKey) -> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let payment_key_hash = WPubkeyHash::hash(&keys.pubkeys().payment_point.serialize());
@@ -1198,6 +1198,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 		inner.funding_info = (fund_outpoint, script);
 		inner.channel_value_satoshis = channel_value_satoshis;
+		inner.onchain_tx_handler.signer.set_channel_value_satoshis(channel_value_satoshis);
 	}
 
 	#[cfg(test)]
@@ -2397,8 +2398,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.latest_update_id = updates.update_id;
 
 		if ret.is_ok() && self.funding_spend_seen {
-			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
-			Err(())
+			log_error!(logger, "Should refuse Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
+			ret
 		} else { ret }
 	}
 
@@ -3235,7 +3236,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		});
 		#[cfg(test)]
 		{
-		        // If we see a transaction for which we registered outputs previously,
+			// If we see a transaction for which we registered outputs previously,
 			// make sure the registered scriptpubkey at the expected index match
 			// the actual transaction output one. We failed this case before #653.
 			for tx in &txn_matched {
@@ -3458,8 +3459,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// matched by any HTLC spend:
 					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
 					debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
-					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
-					                 revocation_sig_claim as u8, 1);
+							 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
+							 revocation_sig_claim as u8, 1);
 					if ($holder_tx && revocation_sig_claim) ||
 							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
 						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
@@ -4256,11 +4257,11 @@ mod tests {
 		let shutdown_pubkey = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let best_block = BestBlock::from_network(Network::Testnet);
 		let monitor = ChannelMonitor::new(Secp256k1::new(), keys,
-		                                  Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
-		                                  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
-		                                  &channel_parameters,
-		                                  Script::new(), 46, 0,
-		                                  HolderCommitmentTransaction::dummy(), best_block, dummy_key);
+						  Some(ShutdownScript::new_p2wpkh_from_pubkey(shutdown_pubkey).into_inner()), 0, &Script::new(),
+						  (OutPoint { txid: Txid::from_slice(&[43; 32]).unwrap(), index: 0 }, Script::new()),
+						  &channel_parameters,
+						  Script::new(), 46, 0,
+						  HolderCommitmentTransaction::dummy(), best_block, dummy_key);
 
 		monitor.provide_latest_holder_commitment_tx(HolderCommitmentTransaction::dummy(), preimages_to_holder_htlcs!(preimages[0..10])).unwrap();
 		monitor.provide_latest_counterparty_commitment_tx(Txid::from_inner(Sha256::hash(b"1").into_inner()),
