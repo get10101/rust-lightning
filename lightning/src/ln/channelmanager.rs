@@ -736,9 +736,9 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, M, T, F, L> = ChannelManage
 //
 pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	default_configuration: UserConfig,
@@ -1239,7 +1239,7 @@ pub struct ChannelDetails {
 	///
 	pub holder_funding_pubkey: PublicKey,
 	///
-	pub counter_funding_pubkey: PublicKey,
+	pub counter_funding_pubkey: Option<PublicKey>,
 	///
 	pub original_funding_outpoint: Option<OutPoint>,
 }
@@ -1586,10 +1586,10 @@ macro_rules! emit_channel_ready_event {
 
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// Constructs a new ChannelManager to hold several channels and route between them.
 	///
@@ -1811,7 +1811,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 					fee_rate_per_kw: channel.get_feerate(),
 					funding_redeemscript,
 					holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
-					counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
+					counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().map(|params| params.pubkeys.funding_pubkey),
 					original_funding_outpoint: channel.channel_transaction_parameters.original_funding_outpoint,
 				});
 			}
@@ -1946,7 +1946,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
 			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-			
+
 			let updates = chan.get_mut().revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
 
 			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(chan.get().get_original_funding_txo().unwrap(), updates.monitor_update) {
@@ -6047,9 +6047,9 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> MessageSendEventsProvider for ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
 				L::Target: Logger,
 {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
@@ -6447,10 +6447,10 @@ where
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 	ChannelMessageHandler for ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn handle_open_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::OpenChannel) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
@@ -7172,10 +7172,10 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelManager<M, T, K, F, L>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let _consistency_lock = self.total_consistency_lock.write().unwrap();
@@ -7369,10 +7369,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable for ChannelMana
 /// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 pub struct ChannelManagerReadArgs<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	/// The keys provider which will give us relevant keys. Some keys will be loaded during
 	/// deserialization and KeysInterface::read_chan_signer will be used to read per-Channel
@@ -7441,10 +7441,10 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, Arc<ChannelManager<M, T, K, F, L>>)
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let (blockhash, chan_manager) = <(BlockHash, ChannelManager<M, T, K, F, L>)>::read(reader, args)?;
@@ -7455,10 +7455,10 @@ impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 impl<'a, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	ReadableArgs<ChannelManagerReadArgs<'a, M, T, K, F, L>> for (BlockHash, ChannelManager<M, T, K, F, L>)
 	where M::Target: chain::Watch<<K::Target as KeysInterface>::Signer>,
-        T::Target: BroadcasterInterface,
-        K::Target: KeysInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
+	T::Target: BroadcasterInterface,
+	K::Target: KeysInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
 {
 	fn read<R: io::Read>(reader: &mut R, mut args: ChannelManagerReadArgs<'a, M, T, K, F, L>) -> Result<Self, DecodeError> {
 		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
