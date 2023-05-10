@@ -243,6 +243,17 @@ impl EcdsaChannelSigner for EnforcingSigner {
 	}
 }
 
+impl crate::chain::keysinterface::ExtraSign for EnforcingSigner {
+	///
+	fn sign_with_fund_key_callback<F>(&self, cb: &mut F) where F: FnMut(&SecretKey) {
+		todo!()
+	}
+	///
+	fn set_channel_value_satoshis(&mut self, value: u64) {
+		todo!()
+	}
+}
+
 impl WriteableEcdsaChannelSigner for EnforcingSigner {}
 
 impl Writeable for EnforcingSigner {
@@ -259,13 +270,13 @@ impl Writeable for EnforcingSigner {
 impl EnforcingSigner {
 	fn verify_counterparty_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_counterparty_broadcastable(),
-		                     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
+				     self.inner.counterparty_pubkeys(), self.inner.pubkeys(), secp_ctx)
 			.expect("derived different per-tx keys or built transaction")
 	}
 
 	fn verify_holder_commitment_tx<'a, T: secp256k1::Signing + secp256k1::Verification>(&self, commitment_tx: &'a CommitmentTransaction, secp_ctx: &Secp256k1<T>) -> TrustedCommitmentTransaction<'a> {
 		commitment_tx.verify(&self.inner.get_channel_parameters().as_holder_broadcastable(),
-		                     self.inner.pubkeys(), self.inner.counterparty_pubkeys(), secp_ctx)
+				     self.inner.pubkeys(), self.inner.counterparty_pubkeys(), secp_ctx)
 			.expect("derived different per-tx keys or built transaction")
 	}
 }
