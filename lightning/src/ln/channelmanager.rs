@@ -1217,7 +1217,7 @@ pub struct ChannelDetails {
 	///
 	pub holder_funding_pubkey: PublicKey,
 	///
-	pub counter_funding_pubkey: PublicKey,
+	pub counter_funding_pubkey: Option<PublicKey>,
 	///
 	pub original_funding_outpoint: Option<OutPoint>,
 }
@@ -1781,7 +1781,7 @@ where
 						fee_rate_per_kw: channel.get_feerate(),
 						funding_redeemscript,
 						holder_funding_pubkey: channel.channel_transaction_parameters.holder_pubkeys.funding_pubkey,
-						counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
+						counter_funding_pubkey: channel.channel_transaction_parameters.counterparty_parameters.as_ref().map(|params| params.pubkeys.funding_pubkey),
 						original_funding_outpoint: channel.channel_transaction_parameters.original_funding_outpoint,
 					});
 				}

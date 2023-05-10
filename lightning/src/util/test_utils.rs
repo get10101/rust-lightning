@@ -253,6 +253,10 @@ impl<'a> chain::Watch<EnforcingSigner> for TestChainMonitor<'a> {
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
+
+	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint, channel_value_satoshis: u64) -> chain::ChannelMonitorUpdateStatus {
+		todo!()
+	}
 }
 
 pub struct TestPersister {
