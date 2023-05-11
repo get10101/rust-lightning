@@ -568,6 +568,19 @@ struct PendingInboundPayment {
 	min_value_msat: Option<u64>,
 }
 
+/// A structure holding a reference to a channel while under lock.
+pub struct ChannelLock<'a, Signer: ChannelSigner> {
+	channel: &'a mut Channel<Signer>,
+}
+
+impl<'a, Signer: ChannelSigner> ChannelLock<'a, Signer> {
+	fn get_channel(&mut self) -> &mut Channel<Signer> {
+		self.channel
+	}
+}
+
+
+
 /// SimpleArcChannelManager is useful when you need a ChannelManager with a static lifetime, e.g.
 /// when you're using lightning-net-tokio (since tokio::spawn requires parameters with static
 /// lifetimes). Other times you can afford a reference, which is more efficient, in which case
@@ -1853,11 +1866,12 @@ where
 		});
 	}
 
-	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, own_balance: u64) -> Result<CommitmentSigned, APIError> {
-		if own_balance > channel_value_satoshis * 1000 {
-			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
-		}
-
+	/// Executes the given callback prividing it with a [`ChannelLock`], ensuring that no other
+	/// operation will be executed on the referenced channel at the same time.
+	pub fn with_useable_channel_lock<C, RV>(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, callback: C) -> Result<RV, APIError>
+		where
+		C: FnOnce(&mut ChannelLock<<SP::Target as SignerProvider>::Signer>) -> Result<RV, APIError>
+	{
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
@@ -1867,131 +1881,108 @@ where
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan_entry.get_mut();
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-
-			let original_funding_txo = chan.get_original_funding_txo().unwrap();
-			let monitor_update = chan.set_funding_outpoint(funding_outpoint, channel_value_satoshis, own_balance, true, &self.logger);
-			let update_res = self.chain_monitor.update_channel(original_funding_txo, monitor_update.unwrap());
-			if ChannelMonitorUpdateStatus::Completed != update_res {
-				return Err(APIError::APIMisuseError { err: "Could not update channel funding outpoint.".to_string() });
+			if !chan.is_usable() {
+				return Err(APIError::ChannelUnavailable { err: "Channel is not useable.".to_string() });
 			}
 
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(chan.get_original_funding_txo().unwrap(), *funding_outpoint, channel_value_satoshis) {
-				return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
+			let channel_value = chan.get_value_satoshis();
+			let own_balance = chan.get_available_balances().balance_msat;
+			let funding_outpoint = chan.channel_transaction_parameters.funding_outpoint.unwrap();
+
+
+			let mut lock = ChannelLock {
+				channel: chan,
+			};
+
+			let res = callback(&mut lock);
+			match res {
+				Ok(res) => Ok(res),
+				Err(e) => {
+					chan.set_funding_outpoint(&funding_outpoint, channel_value, own_balance, false, &self.logger);
+					Err(e)
+				}
 			}
-
-			let res = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
-
-
-			return Ok(res.commitment_update.unwrap().commitment_signed)
 		} else {
-			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+			Err(APIError::ChannelUnavailable { err: "Channel not found".to_string() })
 		}
 	}
 
-	fn on_commitment_signed_get_raa_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
+	fn get_updated_funding_outpoint_commitment_signed_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, funding_outpoint: &OutPoint, channel_value_satoshis: u64, own_balance: u64) -> Result<CommitmentSigned, APIError> {
+		if own_balance > channel_value_satoshis * 1000 {
+			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
+		}
+
+		let chan = channel_lock.get_channel();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
+		let original_funding_txo = chan.get_original_funding_txo().unwrap();
+		let monitor_update = chan.set_funding_outpoint(funding_outpoint, channel_value_satoshis, own_balance, true, &self.logger);
+		let update_res = self.chain_monitor.update_channel(original_funding_txo, monitor_update.unwrap());
+		if ChannelMonitorUpdateStatus::Completed != update_res {
+			return Err(APIError::APIMisuseError { err: "Could not update channel funding outpoint.".to_string() });
+		}
+
+		if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel_funding_txo(chan.get_original_funding_txo().unwrap(), *funding_outpoint, channel_value_satoshis) {
+			return Err(APIError::APIMisuseError { err: "Could not update channel funding transaction.".to_string() });
+		}
+
+		let res = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
+
+
+		return Ok(res.commitment_update.unwrap().commitment_signed)
+	}
+
+	fn on_commitment_signed_get_raa_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
 		let commitment_signed = msgs::CommitmentSigned {
-			channel_id: *channel_id,
+			channel_id: channel_lock.channel.channel_id(),
 			signature: *commitment_signature,
 			htlc_signatures: htlc_signatures.to_vec(),
 		};
-		let per_peer_state = self.per_peer_state.read().unwrap();
 
-		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+		let chan = channel_lock.get_channel();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-			let chan = chan.get_mut();
-			if chan.get_counterparty_node_id() != *counter_party_node_id {
-				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-			}
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		let original_funding_txo = chan.get_original_funding_txo().unwrap();
+		let monitor_update =
+		match chan.commitment_signed(&commitment_signed, &self.logger) {
+			Err(e) => return Err(APIError::APIMisuseError { err: format!("Invalid commitment signed: {:?}", e) }),
+			Ok(res) => res
+		};
 
-			let original_funding_txo = chan.get_original_funding_txo().unwrap();
-			let monitor_update =
-			match chan.commitment_signed(&commitment_signed, &self.logger) {
-				Err(e) => return Err(APIError::APIMisuseError { err: format!("Invalid commitment signed: {:?}", e) }),
-				Ok(res) => res
-			};
-
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, monitor_update) {
-				return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
-			}
-
-			let updates = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
-
-			Ok(updates.raa.unwrap())
-		} else {
-			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, monitor_update) {
+			return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
 		}
+
+		let updates = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
+
+		Ok(updates.raa.unwrap())
 	}
 
-	fn revoke_and_ack_commitment_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
+	fn revoke_and_ack_commitment_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		let chan = channel_lock.get_channel();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
+		let original_funding_txo = chan.get_original_funding_txo().unwrap();
+		let updates = chan.revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-			let chan = chan.get_mut();
-			if chan.get_counterparty_node_id() != *counter_party_node_id {
-				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-			}
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-
-			let original_funding_txo = chan.get_original_funding_txo().unwrap();
-			let updates = chan.revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
-
-			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, updates.1) {
-				return Err(APIError::APIMisuseError { err: "Could not update the channel".to_string() });
-			}
-
-			chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
-
-			Ok(())
-		} else {
-			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
+		if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, updates.1) {
+			return Err(APIError::APIMisuseError { err: "Could not update the channel".to_string() });
 		}
+
+		chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
+
+		Ok(())
 	}
 
-	fn sign_with_fund_key_callback_internal<SF>(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-
-		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
-
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-			chan.get().holder_signer.sign_with_fund_key_callback(cb);
-			return Ok(());
-		} else {
-			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-		}
+	fn sign_with_fund_key_callback_internal<SF>(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, cb: &mut SF) where SF: FnMut(&SecretKey) {
+			channel_lock.channel.holder_signer.sign_with_fund_key_callback(cb);
 	}
 
-	fn set_funding_outpoint_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value: u64, own_balance: u64) -> Result<(), APIError> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
+	fn set_funding_outpoint_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, funding_outpoint: &OutPoint, channel_value: u64, own_balance: u64) {
+		let chan = &mut channel_lock.channel;
 
-		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
-
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-			let chan = chan.get_mut();
-
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
-			chan.set_funding_outpoint(funding_outpoint, channel_value, own_balance, false, &self.logger);
-			return Ok(());
-		} else {
-			return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
-		}
-
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+		chan.set_funding_outpoint(funding_outpoint, channel_value, own_balance, false, &self.logger);
 	}
 
 	fn close_channel_internal(&self, channel_id: &[u8; 32], counterparty_node_id: &PublicKey, target_feerate_sats_per_1000_weight: Option<u32>) -> Result<(), APIError> {
@@ -2099,28 +2090,28 @@ where
 	}
 
 	///
-	pub fn get_updated_funding_outpoint_commitment_signed(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
-		self.get_updated_funding_outpoint_commitment_signed_internal(channel_id, counter_party_node_id, funding_outpoint, channel_value_satoshis, value_to_self_msat)
+	pub fn get_updated_funding_outpoint_commitment_signed(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, funding_outpoint: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<CommitmentSigned, APIError> {
+		self.get_updated_funding_outpoint_commitment_signed_internal(channel_lock, funding_outpoint, channel_value_satoshis, value_to_self_msat)
 	}
 
 	///
-	pub fn on_commitment_signed_get_raa(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<RevokeAndACK, APIError> {
-		self.on_commitment_signed_get_raa_internal(channel_id, counter_party_node_id, commitment_signature, htlc_signatures)
+	pub fn on_commitment_signed_get_raa(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<RevokeAndACK, APIError> {
+		self.on_commitment_signed_get_raa_internal(channel_lock, commitment_signature, htlc_signatures)
 	}
 
 	///
-	pub fn revoke_and_ack_commitment(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
-		self.revoke_and_ack_commitment_internal(channel_id, counter_party_node_id, revoke_and_ack)
+	pub fn revoke_and_ack_commitment(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		self.revoke_and_ack_commitment_internal(channel_lock, revoke_and_ack)
 	}
 
 	///
-	pub fn sign_with_fund_key_callback<SF>(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, cb: &mut SF) -> Result<(), APIError> where SF: FnMut(&SecretKey) {
-		self.sign_with_fund_key_callback_internal(channel_id, counter_party_node_id, cb)
+	pub fn sign_with_fund_key_callback<SF>(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, cb: &mut SF) where SF: FnMut(&SecretKey) {
+		self.sign_with_fund_key_callback_internal(channel_lock, cb);
 	}
 
 	///
-	pub fn set_funding_outpoint(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_output: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) -> Result<(), APIError> {
-		self.set_funding_outpoint_internal(channel_id, counter_party_node_id, funding_output, channel_value_satoshis, value_to_self_msat)
+	pub fn set_funding_outpoint(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, funding_output: &OutPoint, channel_value_satoshis: u64, value_to_self_msat: u64) {
+		self.set_funding_outpoint_internal(channel_lock, funding_output, channel_value_satoshis, value_to_self_msat);
 	}
 
 	#[inline]
