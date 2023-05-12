@@ -220,10 +220,10 @@ impl<ChannelSigner: Sign> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 /// [module-level documentation]: crate::chain::chainmonitor
 pub struct ChainMonitor<ChannelSigner: Sign, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
-        T::Target: BroadcasterInterface,
-        F::Target: FeeEstimator,
-        L::Target: Logger,
-        P::Target: Persist<ChannelSigner>,
+	T::Target: BroadcasterInterface,
+	F::Target: FeeEstimator,
+	L::Target: Logger,
+	P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
 	/// When we generate a [`MonitorUpdateId`] for a chain-event monitor persistence, we need a
@@ -646,6 +646,15 @@ where C::Target: chain::Filter,
 
 	fn update_channel_funding_txo(&self, old_funding_txo: OutPoint, new_funding_txo: OutPoint, channel_value_satoshis: u64) -> ChannelMonitorUpdateStatus {
 		let mut monitors = self.monitors.write().unwrap();
+
+		log_debug!(
+			self.logger,
+			"Updating channel monitor funding txo from {:?} to {:?}. Current monitors: {:?}",
+			old_funding_txo,
+			new_funding_txo,
+			monitors.keys().collect::<Vec<_>>()
+		);
+
 		let monitor_opt = monitors.get_mut(&old_funding_txo);
 		match monitor_opt {
 			None => {
@@ -671,6 +680,14 @@ where C::Target: chain::Filter,
 	fn update_channel(&self, funding_txo: OutPoint, update: ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus {
 		// Update the monitor that watches the channel referred to by the given outpoint.
 		let monitors = self.monitors.read().unwrap();
+
+		log_debug!(
+			self.logger,
+			"Updating channel monitor for {:?}. Current monitors: {:?}",
+			funding_txo,
+			monitors.keys().collect::<Vec<_>>()
+		);
+
 		match monitors.get(&funding_txo) {
 			None => {
 				log_error!(self.logger, "Failed to update channel monitor: no such monitor registered");
