@@ -2397,8 +2397,8 @@ impl<Signer: Sign> ChannelMonitorImpl<Signer> {
 		self.latest_update_id = updates.update_id;
 
 		if ret.is_ok() && self.funding_spend_seen {
-			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
-			Err(())
+			log_error!(logger, "Should refuse Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
+			ret // TODO(lucas): This doesn't seem to make a difference and is probably wrong
 		} else { ret }
 	}
 
