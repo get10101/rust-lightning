@@ -2982,8 +2982,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let txid = tx.txid();
 			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
 			if Some(txid) == self.funding_spend_confirmed {
-				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
-				continue 'tx_iter;
+				// TODO(lucas): I'm not sure if/why this change is important for LN-DLC
+				log_debug!(logger, "Would skip redundant processing of funding-spend tx {} as it was previously confirmed, but could be LN-DLC channel", txid);
+				// continue 'tx_iter;
 			}
 			for ev in self.onchain_events_awaiting_threshold_conf.iter() {
 				if ev.txid == txid {
