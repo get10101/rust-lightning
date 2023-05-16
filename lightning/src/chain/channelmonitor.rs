@@ -2353,7 +2353,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								_ => false,
 							}).is_some();
 						if detected_funding_spend {
-							continue;
+							log_trace!(logger, "Funding spend confirmed, but this could be an LN-DLC channel!");
+							// continue;
 						}
 						self.broadcast_latest_holder_commitment_txn(broadcaster, logger);
 						// If the channel supports anchor outputs, we'll need to emit an external
