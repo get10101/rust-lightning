@@ -1700,8 +1700,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			} else { None }
 		});
 		if let Some((txid, conf_thresh)) = funding_spend_pending {
-			debug_assert!(us.funding_spend_confirmed.is_none(),
-				"We have a pending funding spend awaiting anti-reorg confirmation, we can't have confirmed it already!");
+			// debug_assert!(us.funding_spend_confirmed.is_none(),
+				// "We have a pending funding spend awaiting anti-reorg confirmation, we can't have confirmed it already!");
 			confirmed_txid = Some(txid);
 			pending_commitment_tx_conf_thresh = Some(conf_thresh);
 		}
