@@ -172,6 +172,7 @@ impl Writeable for Option<Vec<Option<(usize, Signature)>>> {
 
 #[cfg(anchors)]
 /// The claim commonly referred to as the pre-signed second-stage HTLC transaction.
+#[derive(PartialEq)]
 pub(crate) struct ExternalHTLCClaim {
 	pub(crate) commitment_txid: Txid,
 	pub(crate) per_commitment_number: u64,
@@ -183,6 +184,7 @@ pub(crate) struct ExternalHTLCClaim {
 // Represents the different types of claims for which events are yielded externally to satisfy said
 // claims.
 #[cfg(anchors)]
+#[derive(PartialEq)]
 pub(crate) enum ClaimEvent {
 	/// Event yielded to signal that the commitment transaction fee must be bumped to claim any
 	/// encumbered funds and proceed to HTLC resolution, if any HTLCs exist.
