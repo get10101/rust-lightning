@@ -256,7 +256,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 
 #[cfg(anchors)]
 /// A descriptor used to sign for a commitment transaction's anchor output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
@@ -276,7 +276,7 @@ pub struct AnchorDescriptor {
 
 #[cfg(anchors)]
 /// A descriptor used to sign for a commitment transaction's HTLC output.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HTLCDescriptor {
 	/// A unique identifier used along with `channel_value_satoshis` to re-derive the
 	/// [`InMemorySigner`] required to sign `input`.
@@ -369,7 +369,7 @@ impl HTLCDescriptor {
 
 #[cfg(anchors)]
 /// Represents the different types of transactions, originating from LDK, to be bumped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BumpTransactionEvent {
 	/// Indicates that a channel featuring anchor outputs is to be closed by broadcasting the local
 	/// commitment transaction. Since commitment transactions have a static feerate pre-agreed upon,
@@ -462,7 +462,9 @@ pub enum BumpTransactionEvent {
 	/// [`BaseSign::sign_holder_htlc_transaction`]: crate::chain::keysinterface::BaseSign::sign_holder_htlc_transaction
 	/// [`HTLCDescriptor::tx_input_witness`]: HTLCDescriptor::tx_input_witness
 	HTLCResolution {
+		///
 		target_feerate_sat_per_1000_weight: u32,
+		///
 		htlc_descriptors: Vec<HTLCDescriptor>,
 	},
 }
