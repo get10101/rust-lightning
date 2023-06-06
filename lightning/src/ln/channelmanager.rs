@@ -4333,7 +4333,7 @@ where
 		let counterparty_node_id = channel.get_counterparty_node_id();
 		if !pending_forwards.is_empty() {
 			htlc_forwards = Some((channel.get_short_channel_id().unwrap_or(channel.outbound_scid_alias()),
-				channel.get_funding_txo().unwrap(), channel.get_user_id(), pending_forwards));
+				channel.get_original_funding_txo().unwrap(), channel.get_user_id(), pending_forwards));
 		}
 
 		if let Some(msg) = channel_ready {
