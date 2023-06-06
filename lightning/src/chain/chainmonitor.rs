@@ -660,7 +660,10 @@ where C::Target: chain::Filter,
 				return ChannelMonitorUpdateStatus::PermanentFailure;
 			},
 			Some(monitor_state) => {
-				monitor_state.monitor.update_funding_info(new_funding_txo, channel_value_satoshis);
+				let spk = monitor_state.monitor.update_funding_info(new_funding_txo, channel_value_satoshis);
+				if let Some(filter) = &self.chain_source {
+					filter.register_output(WatchedOutput { block_hash: None, outpoint: new_funding_txo, script_pubkey: spk });
+				}
 				return ChannelMonitorUpdateStatus::Completed;
 			}
 		}

@@ -1184,7 +1184,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			txid, htlc_outputs, commitment_number, their_per_commitment_point, logger)
 	}
 
-	pub(crate) fn update_funding_info(&self, fund_outpoint: OutPoint, channel_value_satoshis: u64) {
+	pub(crate) fn update_funding_info(&self, fund_outpoint: OutPoint, channel_value_satoshis: u64) -> Script {
 		let mut inner = self.inner.lock().unwrap();
 		// inner.outputs_to_watch.remove(inner.get_funding_txo());
 		let script = inner.funding_info.1.clone();
@@ -1194,11 +1194,12 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		} else {
 			inner.original_funding_info = Some((inner.funding_info.0.clone(), inner.funding_info.1.clone()));
-			inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
 		}
-		inner.funding_info = (fund_outpoint, script);
+		inner.outputs_to_watch.insert(fund_outpoint.txid, vec![(fund_outpoint.index as u32, script.clone())]);
+		inner.funding_info = (fund_outpoint, script.clone());
 		inner.channel_value_satoshis = channel_value_satoshis;
 		inner.onchain_tx_handler.signer.set_channel_value_satoshis(channel_value_satoshis);
+		script
 	}
 
 	#[cfg(test)]
@@ -3018,8 +3019,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				let match_prevout = |outpoint: &OutPoint| {
 					prevout.txid == outpoint.txid && prevout.vout == outpoint.index as u32
 				};
+				let is_split = tx.output.len() == 2 && tx.output[0].script_pubkey == tx.output[1].script_pubkey;
 				let is_match = match_prevout(&self.funding_info.0) ||
-					(self.original_funding_info.is_some() && match_prevout(&self.original_funding_info.as_ref().unwrap().0));
+					(self.original_funding_info.is_some() && match_prevout(&self.original_funding_info.as_ref().unwrap().0) && !is_split);
 
 				if is_match {
 					let mut balance_spendable_csv = None;
