@@ -1536,7 +1536,7 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
 		let mut number_of_msg_events = 0;
 		for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
-			let peer_state = peer_state_mutex.lock().unwrap();
+			let peer_state = peer_state_mutex.lock();
 			let cp_pending_msg_events = &peer_state.pending_msg_events;
 			number_of_msg_events += cp_pending_msg_events.len();
 			if cp_pending_msg_events.len() == 1 {
@@ -2039,7 +2039,7 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 					let fee = {
 						let per_peer_state = $node.node.per_peer_state.read().unwrap();
 						let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
-							.unwrap().lock().unwrap();
+							.unwrap().lock();
 						let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
 						if let Some(prev_config) = channel.prev_config() {
 							prev_config.forwarding_fee_base_msat

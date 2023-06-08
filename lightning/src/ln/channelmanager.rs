@@ -844,9 +844,9 @@ where
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
+	per_peer_state: FairRwLock<HashMap<PublicKey, parking_lot::Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, parking_lot::Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>>>,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	pending_events: Mutex<Vec<events::Event>>,
@@ -1329,7 +1329,7 @@ macro_rules! handle_error {
 				if !msg_events.is_empty() {
 					let per_peer_state = $self.per_peer_state.read().unwrap();
 					if let Some(peer_state_mutex) = per_peer_state.get(&$counterparty_node_id) {
-						let mut peer_state = peer_state_mutex.lock().unwrap();
+						let mut peer_state = peer_state_mutex.lock();
 						peer_state.pending_msg_events.append(&mut msg_events);
 					}
 				}
@@ -1681,7 +1681,7 @@ where
 		let peer_state_mutex = per_peer_state.get(&their_network_key)
 			.ok_or_else(|| APIError::APIMisuseError{ err: format!("Not connected to node: {}", their_network_key) })?;
 
-		let mut peer_state = peer_state_mutex.lock().unwrap();
+		let mut peer_state = peer_state_mutex.lock();
 		let channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
@@ -1730,7 +1730,7 @@ where
 			let best_block_height = self.best_block.read().unwrap().height();
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				for (channel_id, channel) in peer_state.channel_by_id.iter().filter(f) {
 					let balance = channel.get_available_balances();
@@ -1866,7 +1866,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan_entry.get_mut();
@@ -1903,7 +1903,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan.get_mut();
@@ -1937,7 +1937,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan.get_mut();
@@ -1967,7 +1967,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			chan.get().holder_signer.sign_with_fund_key_callback(cb);
@@ -1983,7 +1983,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan.get_mut();
@@ -2007,7 +2007,7 @@ where
 			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
 
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -2153,7 +2153,7 @@ where
 		let peer_state_mutex = per_peer_state.get(peer_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", peer_node_id) })?;
 		let mut chan = {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 				if let Some(peer_msg) = peer_msg {
@@ -2169,7 +2169,7 @@ where
 		log_error!(self.logger, "Force-closing channel {}", log_bytes!(channel_id[..]));
 		self.finish_force_close_channel(chan.force_shutdown(broadcast));
 		if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-			let mut peer_state = peer_state_mutex.lock().unwrap();
+			let mut peer_state = peer_state_mutex.lock();
 			peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 				msg: update
 			});
@@ -2184,7 +2184,7 @@ where
 			Ok(counterparty_node_id) => {
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-					let mut peer_state = peer_state_mutex.lock().unwrap();
+					let mut peer_state = peer_state_mutex.lock();
 					peer_state.pending_msg_events.push(
 						events::MessageSendEvent::HandleError {
 							node_id: counterparty_node_id,
@@ -2459,7 +2459,7 @@ where
 						if peer_state_mutex_opt.is_none() {
 							break Some(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
 						}
-						let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+						let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 						let peer_state = &mut *peer_state_lock;
 						let chan = match peer_state.channel_by_id.get_mut(&forwarding_id) {
 							None => {
@@ -2663,7 +2663,7 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 				.ok_or_else(|| APIError::ChannelUnavailable{err: "No peer matching the path's first hop found!".to_owned() })?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(id) {
 				if !chan.get().is_live() {
@@ -2908,7 +2908,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		let (chan, msg) = {
 			let (res, chan) = {
@@ -3076,7 +3076,7 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		for channel_id in channel_ids {
 			if !peer_state.channel_by_id.contains_key(channel_id) {
@@ -3131,7 +3131,7 @@ where
 			let peer_state_lock = self.per_peer_state.read().unwrap();
 			let peer_state_mutex = peer_state_lock.get(&next_node_id)
 				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.get(next_hop_channel_id) {
 				Some(chan) => {
@@ -3328,7 +3328,7 @@ where
 						forwarding_channel_not_found!();
 						continue;
 					}
-					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 					let peer_state = &mut *peer_state_lock;
 					match peer_state.channel_by_id.entry(forward_chan_id) {
 						hash_map::Entry::Vacant(_) => {
@@ -3696,7 +3696,7 @@ where
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				for (chan_id, chan) in peer_state.channel_by_id.iter_mut() {
 					let chan_needs_persist = self.update_channel_fee(chan_id, chan, new_feerate);
@@ -3734,7 +3734,7 @@ where
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
-					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let mut peer_state_lock = peer_state_mutex.lock();
 					let peer_state = &mut *peer_state_lock;
 					let pending_msg_events = &mut peer_state.pending_msg_events;
 					let counterparty_node_id = *counterparty_node_id;
@@ -3799,7 +3799,7 @@ where
 							// Remove the entry if the peer is still disconnected and we still
 							// have no channels to the peer.
 							let remove_entry = {
-								let peer_state = entry.get().lock().unwrap();
+								let peer_state = entry.get().lock();
 								peer_state.ok_to_remove(true)
 							};
 							if remove_entry {
@@ -3962,7 +3962,7 @@ where
 		let (failure_code, onion_failure_data) = {
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id) {
 					hash_map::Entry::Occupied(chan_entry) => {
@@ -4118,7 +4118,7 @@ where
 				break;
 			}
 
-			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 			let peer_state = &mut *peer_state_lock;
 
 			if peer_state.channel_by_id.get(&chan_id).is_none() {
@@ -4206,7 +4206,7 @@ where
 
 		let peer_state_opt = counterparty_node_id_opt.as_ref().map(
 			|counterparty_node_id| per_peer_state.get(counterparty_node_id).map(
-				|peer_mutex| peer_mutex.lock().unwrap()
+				|peer_mutex| peer_mutex.lock()
 			)
 		).unwrap_or(None);
 
@@ -4414,7 +4414,7 @@ where
 		let mut peer_state_lock;
 		let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 		if peer_state_mutex_opt.is_none() { return }
-		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 		let peer_state = &mut *peer_state_lock;
 		let mut channel = {
 			match peer_state.channel_by_id.entry(funding_txo.to_channel_id()){
@@ -4479,7 +4479,7 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		let is_only_peer_channel = peer_state.channel_by_id.len() == 1;
 		match peer_state.channel_by_id.entry(temporary_channel_id.clone()) {
@@ -4540,7 +4540,7 @@ where
 		{
 			let peer_state_lock = self.per_peer_state.read().unwrap();
 			for (_, peer_mtx) in peer_state_lock.iter() {
-				let peer = peer_mtx.lock().unwrap();
+				let peer = peer_mtx.lock();
 				if !maybe_count_peer(&*peer) { continue; }
 				let num_unfunded_channels = Self::unfunded_channel_count(&peer, best_block_height);
 				if num_unfunded_channels == peer.channel_by_id.len() {
@@ -4590,7 +4590,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id.clone())
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 
 		// If this peer already has some channels, a new channel won't increase our number of peers
@@ -4663,7 +4663,7 @@ where
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id)
 				})?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
@@ -4694,7 +4694,7 @@ where
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.temporary_channel_id)
 			})?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		let ((funding_msg, monitor), chan) =
 			match peer_state.channel_by_id.entry(msg.temporary_channel_id) {
@@ -4760,7 +4760,7 @@ where
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
 
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -4789,7 +4789,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -4833,7 +4833,7 @@ where
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 				})?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -4887,7 +4887,7 @@ where
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
 		let (tx, chan_option) = {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_entry) => {
@@ -4916,7 +4916,7 @@ where
 		}
 		if let Some(chan) = chan_option {
 			if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				peer_state.pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 					msg: update
@@ -4944,7 +4944,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -4986,7 +4986,7 @@ where
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 				})?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
@@ -5006,7 +5006,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5024,7 +5024,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5046,7 +5046,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5165,7 +5165,7 @@ where
 				.ok_or_else(|| {
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-				}).map(|mtx| mtx.lock().unwrap())?;
+				}).map(|mtx| mtx.lock())?;
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
@@ -5191,7 +5191,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5209,7 +5209,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5246,7 +5246,7 @@ where
 		if peer_state_mutex_opt.is_none() {
 			return Ok(NotifyOption::SkipPersist)
 		}
-		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+		let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(mut chan) => {
@@ -5283,7 +5283,7 @@ where
 					debug_assert!(false);
 					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
 				})?;
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
@@ -5369,7 +5369,7 @@ where
 						if let Some(counterparty_node_id) = counterparty_node_id_opt {
 							let per_peer_state = self.per_peer_state.read().unwrap();
 							if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+								let mut peer_state_lock = peer_state_mutex.lock();
 								let peer_state = &mut *peer_state_lock;
 								let pending_msg_events = &mut peer_state.pending_msg_events;
 								if let hash_map::Entry::Occupied(chan_entry) = peer_state.channel_by_id.entry(funding_outpoint.to_channel_id()) {
@@ -5440,7 +5440,7 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				'chan_loop: loop {
-					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let mut peer_state_lock = peer_state_mutex.lock();
 					let peer_state: &mut PeerState<_> = &mut *peer_state_lock;
 					for (channel_id, chan) in peer_state.channel_by_id.iter_mut() {
 						let counterparty_node_id = chan.get_counterparty_node_id();
@@ -5494,7 +5494,7 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|channel_id, chan| {
@@ -5778,7 +5778,7 @@ where
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values() {
 				for (htlc_source, _) in chan.inflight_htlc_sources() {
@@ -5918,7 +5918,7 @@ where
 			let mut pending_events = Vec::new();
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				if peer_state.pending_msg_events.len() > 0 {
 					pending_events.append(&mut peer_state.pending_msg_events);
@@ -6084,7 +6084,7 @@ where
 	fn get_relevant_txids(&self) -> Vec<(Txid, Option<BlockHash>)> {
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values() {
 				if let (Some(funding_txo), Some(block_hash)) = (chan.get_original_funding_txo(), chan.get_funding_tx_confirmed_in()) {
@@ -6132,7 +6132,7 @@ where
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|_, channel| {
@@ -6457,7 +6457,7 @@ where
 			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates.",
 				log_pubkey!(counterparty_node_id));
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				peer_state.channel_by_id.retain(|_, chan| {
@@ -6531,7 +6531,7 @@ where
 					if inbound_peer_limited {
 						return Err(());
 					}
-					e.insert(Mutex::new(PeerState {
+					e.insert(parking_lot::Mutex::new(PeerState {
 						channel_by_id: HashMap::new(),
 						latest_features: init_msg.features.clone(),
 						pending_msg_events: Vec::new(),
@@ -6540,7 +6540,7 @@ where
 					}));
 				},
 				hash_map::Entry::Occupied(e) => {
-					let mut peer_state = e.get().lock().unwrap();
+					let mut peer_state = e.get().lock();
 					peer_state.latest_features = init_msg.features.clone();
 
 					let best_block_height = self.best_block.read().unwrap().height();
@@ -6561,7 +6561,7 @@ where
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			let pending_msg_events = &mut peer_state.pending_msg_events;
 			peer_state.channel_by_id.retain(|_, chan| {
@@ -6605,7 +6605,7 @@ where
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 				if peer_state_mutex_opt.is_none() { return; }
-				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 				let peer_state = &mut *peer_state_lock;
 				peer_state.channel_by_id.keys().cloned().collect()
 			};
@@ -6619,7 +6619,7 @@ where
 				let per_peer_state = self.per_peer_state.read().unwrap();
 				let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 				if peer_state_mutex_opt.is_none() { return; }
-				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock();
 				let peer_state = &mut *peer_state_lock;
 				if let Some(chan) = peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
@@ -7142,7 +7142,7 @@ where
 			let mut unfunded_channels = 0;
 			let mut number_of_channels = 0;
 			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				if !peer_state.ok_to_remove(false) {
 					serializable_peer_count += 1;
@@ -7158,7 +7158,7 @@ where
 			((number_of_channels - unfunded_channels) as u64).write(writer)?;
 
 			for (_, peer_state_mutex) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let mut peer_state_lock = peer_state_mutex.lock();
 				let peer_state = &mut *peer_state_lock;
 				for (_, channel) in peer_state.channel_by_id.iter() {
 					if channel.is_funding_initiated() {
@@ -7611,7 +7611,7 @@ where
 		}
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>)>()));
+		let mut per_peer_state = HashMap::with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, parking_lot::Mutex<PeerState<<SP::Target as SignerProvider>::Signer>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_state = PeerState {
@@ -7621,7 +7621,7 @@ where
 				monitor_update_blocked_actions: BTreeMap::new(),
 				is_connected: false,
 			};
-			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
+			per_peer_state.insert(peer_pubkey, parking_lot::Mutex::new(peer_state));
 		}
 
 		let event_count: u64 = Readable::read(reader)?;
@@ -7889,7 +7889,7 @@ where
 
 		let mut outbound_scid_aliases = HashSet::new();
 		for (_peer_node_id, peer_state_mutex) in per_peer_state.iter_mut() {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let mut peer_state_lock = peer_state_mutex.lock();
 			let peer_state = &mut *peer_state_lock;
 			for (chan_id, chan) in peer_state.channel_by_id.iter_mut() {
 				if chan.outbound_scid_alias() == 0 {
@@ -7952,7 +7952,7 @@ where
 						let previous_channel_id = claimable_htlc.prev_hop.outpoint.to_channel_id();
 						if let Some(peer_node_id) = id_to_peer.get(&previous_channel_id){
 							let peer_state_mutex = per_peer_state.get(peer_node_id).unwrap();
-							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let mut peer_state_lock = peer_state_mutex.lock();
 							let peer_state = &mut *peer_state_lock;
 							if let Some(channel) = peer_state.channel_by_id.get_mut(&previous_channel_id) {
 								channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &args.logger);
@@ -7974,7 +7974,7 @@ where
 
 		for (node_id, monitor_update_blocked_actions) in monitor_update_blocked_actions_per_peer.unwrap() {
 			if let Some(peer_state) = per_peer_state.get_mut(&node_id) {
-				peer_state.lock().unwrap().monitor_update_blocked_actions = monitor_update_blocked_actions;
+				peer_state.lock().monitor_update_blocked_actions = monitor_update_blocked_actions;
 			} else {
 				log_error!(args.logger, "Got blocked actions without a per-peer-state for {}", node_id);
 				return Err(DecodeError::InvalidValue);

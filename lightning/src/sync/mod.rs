@@ -43,6 +43,13 @@ mod ext_impl {
 		#[inline]
 		fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> { self.lock().unwrap() }
 	}
+	impl<'a, T: 'a> LockTestExt<'a> for parking_lot::Mutex<T> {
+		#[inline]
+		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
+		type ExclLock = parking_lot::MutexGuard<'a, T>;
+		#[inline]
+		fn unsafe_well_ordered_double_lock_self(&'a self) -> parking_lot::MutexGuard<T> { self.lock() }
+	}
 	impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 		#[inline]
 		fn held_by_thread(&self) -> LockHeldState { LockHeldState::Unsupported }
