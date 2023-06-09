@@ -1915,31 +1915,23 @@ where
 
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
-			log_info!(self.logger, "Checking channel");
 			let chan = chan.get_mut();
 			if chan.get_counterparty_node_id() != *counter_party_node_id {
 				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
 
-			log_info!(self.logger, "Getting original funding TXO");
 			let original_funding_txo = chan.get_original_funding_txo().unwrap();
-
-			log_info!(self.logger, "Doing commitment signed");
 			let monitor_update =
 			match chan.commitment_signed(&commitment_signed, &self.logger) {
 				Err(e) => return Err(APIError::APIMisuseError { err: format!("Invalid commitment signed: {:?}", e) }),
 				Ok(res) => res
 			};
 
-			log_info!(self.logger, "Updating channel");
 			if ChannelMonitorUpdateStatus::Completed != self.chain_monitor.update_channel(original_funding_txo, monitor_update) {
 				return Err(APIError::APIMisuseError { err: "Could not update channel".to_string() });
 			}
 
-			log_info!(self.logger, "Updating restored");
 			let updates = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
-
-			log_info!(self.logger, "Done");
 
 			Ok(updates.raa.unwrap())
 		} else {
