@@ -1901,18 +1901,12 @@ where
 			signature: *commitment_signature,
 			htlc_signatures: htlc_signatures.to_vec(),
 		};
-
-		log_info!(self.logger, "Getting per_peer_state read lock");
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		log_info!(self.logger, "Got per_peer_state read lock");
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counter_party_node_id) })?;
 
-		log_info!(self.logger, "Getting peer_state_mutex lock");
 		let mut peer_state_lock = peer_state_mutex.lock();
-		log_info!(self.logger, "Got peer_state_mutex lock");
-
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan.get_mut();
