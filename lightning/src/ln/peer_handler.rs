@@ -705,9 +705,9 @@ fn filter_addresses(ip_address: Option<NetAddress>) -> Option<NetAddress> {
 		Some(NetAddress::IPv4{addr: [0, _, _, _], port: _}) => None,
 		// For IPv4 range 100.64.0.0 - 100.127.255.255 (100.64/10)
 		Some(NetAddress::IPv4{addr: [100, 64..=127, _, _], port: _}) => None,
-		// For IPv4 range  	127.0.0.0 - 127.255.255.255 (127/8)
+		// For IPv4 range	127.0.0.0 - 127.255.255.255 (127/8)
 		Some(NetAddress::IPv4{addr: [127, _, _, _], port: _}) => None,
-		// For IPv4 range  	169.254.0.0 - 169.254.255.255 (169.254/16)
+		// For IPv4 range	169.254.0.0 - 169.254.255.255 (169.254/16)
 		Some(NetAddress::IPv4{addr: [169, 254, _, _], port: _}) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
 		Some(NetAddress::IPv4{addr: [172, 16..=31, _, _], port: _}) => None,
@@ -2174,6 +2174,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		log_debug!(self.logger, "Broadcasting NodeAnnouncement after passing it to our own RoutingMessageHandler.");
 		let _ = self.message_handler.route_handler.handle_node_announcement(&msg);
 		self.forward_broadcast_msg(&*self.peers.read().unwrap(), &wire::Message::NodeAnnouncement(msg), None);
+
+		log_debug!(self.logger, "DONE Broadcasting NodeAnnouncement after passing it to our own RoutingMessageHandler.");
 	}
 }
 
