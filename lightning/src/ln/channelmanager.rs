@@ -1861,6 +1861,8 @@ where
 			return Err(APIError::APIMisuseError { err: "value_to_self must be smaller than channel_value".to_string() });
 		}
 
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
@@ -1870,7 +1872,6 @@ where
 		let peer_state = &mut *peer_state_lock;
 		if let hash_map::Entry::Occupied(mut chan_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan_entry.get_mut();
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 			let original_funding_txo = chan.get_original_funding_txo().unwrap();
 			let monitor_update = chan.set_funding_outpoint(funding_outpoint, channel_value_satoshis, own_balance, true, &self.logger);
@@ -1893,6 +1894,8 @@ where
 	}
 
 	fn on_commitment_signed_get_raa_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
 		let commitment_signed = msgs::CommitmentSigned {
 			channel_id: *channel_id,
 			signature: *commitment_signature,
@@ -1917,8 +1920,6 @@ where
 			if chan.get_counterparty_node_id() != *counter_party_node_id {
 				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
-			log_info!(self.logger, "Building total consistency lock guard");
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 			log_info!(self.logger, "Getting original funding TXO");
 			let original_funding_txo = chan.get_original_funding_txo().unwrap();
@@ -1947,6 +1948,8 @@ where
 	}
 
 	fn revoke_and_ack_commitment_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
@@ -1959,7 +1962,6 @@ where
 			if chan.get_counterparty_node_id() != *counter_party_node_id {
 				return Err(APIError::ChannelUnavailable{err: "No such channel".to_owned()});
 			}
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 			let original_funding_txo = chan.get_original_funding_txo().unwrap();
 			let updates = chan.revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
@@ -1993,6 +1995,8 @@ where
 	}
 
 	fn set_funding_outpoint_internal(&self, channel_id: &[u8; 32], counter_party_node_id: &PublicKey, funding_outpoint: &OutPoint, channel_value: u64, own_balance: u64) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
@@ -2003,7 +2007,7 @@ where
 		if let hash_map::Entry::Occupied(mut chan) = peer_state.channel_by_id.entry(channel_id.clone()) {
 			let chan = chan.get_mut();
 
-			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
+
 			chan.set_funding_outpoint(funding_outpoint, channel_value, own_balance, false, &self.logger);
 			return Ok(());
 		} else {
