@@ -1872,6 +1872,7 @@ where
 		where
 		C: FnOnce(&mut ChannelLock<<SP::Target as SignerProvider>::Signer>) -> Result<RV, APIError>
 	{
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		let peer_state_mutex = per_peer_state.get(counter_party_node_id)
@@ -1913,7 +1914,6 @@ where
 		}
 
 		let chan = channel_lock.get_channel();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let original_funding_txo = chan.get_original_funding_txo().unwrap();
 		let monitor_update = chan.set_funding_outpoint(funding_outpoint, channel_value_satoshis, own_balance, true, &self.logger);
@@ -1940,7 +1940,6 @@ where
 		};
 
 		let chan = channel_lock.get_channel();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let original_funding_txo = chan.get_original_funding_txo().unwrap();
 		let monitor_update =
@@ -1960,7 +1959,6 @@ where
 
 	fn revoke_and_ack_commitment_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, revoke_and_ack: &RevokeAndACK) -> Result<(), APIError> {
 		let chan = channel_lock.get_channel();
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
 		let original_funding_txo = chan.get_original_funding_txo().unwrap();
 		let updates = chan.revoke_and_ack(revoke_and_ack, &self.logger).map_err(|e| APIError::APIMisuseError { err: format!("{:?}", e) })?;
@@ -1981,7 +1979,6 @@ where
 	fn set_funding_outpoint_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, funding_outpoint: &OutPoint, channel_value: u64, own_balance: u64) {
 		let chan = &mut channel_lock.channel;
 
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		chan.set_funding_outpoint(funding_outpoint, channel_value, own_balance, false, &self.logger);
 	}
 
