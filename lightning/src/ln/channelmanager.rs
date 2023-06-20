@@ -1928,8 +1928,9 @@ where
 
 		let res = chan.monitor_updating_restored(&self.logger, &self.node_signer, self.genesis_hash, &self.default_configuration, self.best_block.read().unwrap().height());
 
+		let commitment_update = res.commitment_update.ok_or_else(|| APIError::ChannelUnavailable { err: "Could not find commitment update".to_string() })?;
 
-		return Ok(res.commitment_update.unwrap().commitment_signed)
+		Ok(commitment_update.commitment_signed)
 	}
 
 	fn on_commitment_signed_get_raa_internal(&self, channel_lock: &mut ChannelLock<<SP::Target as SignerProvider>::Signer>, commitment_signature: &secp256k1::ecdsa::Signature, htlc_signatures: &[secp256k1::ecdsa::Signature]) -> Result<msgs::RevokeAndACK, APIError> {
